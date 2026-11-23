@@ -58,7 +58,11 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
 
       - name: Assemble release
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+        run: |
+          # 上游发布的 gradlew 是 CRLF，Linux 上 shebang 会带 \r。
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Sign APK
         if: env.KEYSTORE_B64 != ''
