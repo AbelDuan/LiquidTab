@@ -58,7 +58,8 @@ ConstraintLayout 页面根
 2. 否则扫描 decor 树，找“顶栏带内、标签右侧、文字非空、自身或父层有背景”的 `TextView`，
    隐藏文字并连带隐藏窄背景包装层；
 3. 找不到就保留原生界面，并在 logcat 打一次
-   `LiquidTabXhsTop: search icon path=... siblings=[...]`，用这条日志继续定位。
+   `LiquidTabXhsTop: search icon path=... siblings=[...]`。注意 release 版会被 R8
+   裁掉 `Log`，要定位结构时用 debug 构建或临时去掉 `-assumenosideeffects`。
 
 ## 排查命令
 
