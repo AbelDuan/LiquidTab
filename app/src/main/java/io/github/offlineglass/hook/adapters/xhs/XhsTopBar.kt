@@ -192,6 +192,7 @@ internal object XhsTopBar {
         var nativeOrder = emptyList<View>()
         var menuSource: View? = null
         var searchSource: View? = null
+        private var searchChrome: XhsSearchChrome? = null
         var channelSource: View? = null
         var channelRow: View? = null
         private val channelSelection = XhsTopChannel()
@@ -321,7 +322,11 @@ internal object XhsTopBar {
                 listOf(following, explore) + nativeOrder.filter { it !== following && it !== explore }
                 else nativeOrder
             menuSource = XhsTopBinding.headerAction(nativeTabs, false, 0x7f0930d1)
-            searchSource = XhsTopBinding.headerAction(nativeTabs, true, 0x7f092e7c)
+            val foundSearch = XhsTopBinding.headerAction(nativeTabs, true, 0x7f092e7c)
+            if (foundSearch !== searchSource) {
+                searchSource = foundSearch
+                searchChrome = foundSearch?.let { XhsSearchChrome(root, nativeTabs, menuSource, it) }
+            }
             // x8d.b0.t0() -> 0x7f0908ae; x8d.k observes this exact native click.
             channelSource = root.findViewById(0x7f0908ae)
             channelRow = XhsTopBinding.channelRow(root) ?: root.findViewById(0x7f09110f)
@@ -443,6 +448,7 @@ internal object XhsTopBar {
             topHosts[1].updateAdapterSlotCount(3, selection)
             hide(nativeTabs); hide(menuSource); hide(searchSource)
             headerChrome.suppress { view, decorative -> hide(view, decorative) }
+            searchChrome?.suppress { view, decorative -> hide(view, decorative) }
             clear(clearedChrome)
             viewport.update(headerBottom)
             refreshIndicator.update(root, headerBottom)
