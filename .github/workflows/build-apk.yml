@@ -18,6 +18,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,12 +55,8 @@ jobs:
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Sign APK
-        if: ${{ secrets.KEYSTORE_B64 != '' }}
+        if: env.KEYSTORE_B64 != ''
         env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
         run: |
@@ -77,7 +78,7 @@ jobs:
           cat "$OUT.sha256"
 
       - name: Fallback unsigned APK
-        if: ${{ secrets.KEYSTORE_B64 == '' }}
+        if: env.KEYSTORE_B64 == ''
         run: |
           set -euo pipefail
           SRC=$(find app/build/outputs/apk/release -name '*-unsigned.apk' | head -1)
@@ -105,5 +106,5 @@ jobs:
             LiquidTab-*.apk.sha256
           generate_release_notes: true
           body: |
-            基于上游 tag `${{ github.event.repository.description }}` 的自定义构建。
+            基于上游 LiquidTab 的自定义构建（补丁基线见 fork/upstream-base）。
             安装前请确认设备允许跨签名覆盖安装，或先备份数据。
