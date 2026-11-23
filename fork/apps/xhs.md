@@ -78,5 +78,5 @@ grep -i "offlineglass" "$F" | tail -30
 
 - `menuSource`/`searchSource` 是结构推断，应用改版后可能先失效；`ready` 失败时顶栏整体不出现，原生界面保留。
 - 搜索胶囊的判定必须在顶栏带内，否则会误伤信息流卡片文字；当前实现跳过 RecyclerView 子树。
-- 折叠屏内屏若走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类），当前 `XhsTopBar` 不接管；
-  这种情况需要单独验证，不要假设手机布局的结构。
+- 折叠屏内屏走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类）。`XhsTopBar.install` 现在同时 hook
+  两个类；600dp 宽度模拟下顶栏和搜索胶囊隐藏都正常，但真实内屏仍需展开复核。
