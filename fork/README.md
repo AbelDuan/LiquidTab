@@ -48,6 +48,12 @@ tools/export-patches.sh        # 导出到 patches/
 
 ## 出包
 
+首次在新环境启用：
+
+1. 在仓库 Settings → Secrets and variables → Actions 配置 `KEYSTORE_B64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`；
+2. 在 Actions 里启用 workflow（fork 默认是关的）；
+3. 推送 `custom` 或手动运行 `build-apk`。
+
 推送到 `custom` 或手动 `workflow_dispatch` 即构建：
 
 - 有 `KEYSTORE_B64` 等 secrets：直接产出已签名 APK + SHA256；
