@@ -32,13 +32,19 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install platform 37 and build tools
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --channel=3 "platforms;android-37" "build-tools;37.0.0"
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKM"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-37.0" "build-tools;37.0.0"
+          # AGP 的 compileSdk = 37 按 android-37 目录查找；SDK 包名是 37.0。
+          if [ -d "$SDK/platforms/android-37.0" ] && [ ! -e "$SDK/platforms/android-37" ]; then
+            ln -s "$SDK/platforms/android-37.0" "$SDK/platforms/android-37"
+          fi
+          ls "$SDK/platforms" "$SDK/build-tools"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
