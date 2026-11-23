@@ -39,6 +39,7 @@ internal class XhsSearchChrome(
 
     fun suppress(hide: (View, Boolean) -> Unit) {
         if (!icon.isAttachedToWindow || icon.width <= 0 || icon.height <= 0) return
+        reportPathOnce()
         val d = icon.resources.displayMetrics.density
         icon.getLocationInWindow(location)
         val iconX = location[0]
@@ -53,7 +54,7 @@ internal class XhsSearchChrome(
         var depth = 0
         while (layer != null && layer !== root && depth < 3) {
             if (isDedicatedLayer(layer, iconRight)) {
-                hide(layer)
+                hide(layer, false)
                 report("layer", layer)
                 return
             }
@@ -80,7 +81,13 @@ internal class XhsSearchChrome(
             if (right < leftOfTabs() - (8f * d).toInt()) continue
             if (bottom < iconY - limit || top > iconBottom + limit) continue
             if (abs(top + text.height / 2 - iconCenterY) > limit) continue
-            hide(text)
+            hide(text, false)
+            val box = (text.parent as? ViewGroup)?.takeIf { parent ->
+                parent !== header && !parent.isClickable && parent.width <= root.width * .8f &&
+                    parent.height <= text.height * 2 && !contains(parent, tabs) && !contains(parent, icon) &&
+                    (parent.background != null || text.background == null)
+            }
+            if (box != null) hide(box, false)
             hidden++
         }
         if (hidden > 0) report("hint", candidates.firstOrNull { text ->
@@ -102,7 +109,7 @@ internal class XhsSearchChrome(
         if (!Rect.intersects(bounds, iconRect)) return false
         // The layer must actually carry the search entry left of the icon.
         val text = findHintText(layer, iconRight) ?: return false
-        return text.width > icon.width && text.background != null
+        return text.width > icon.height / 2
     }
 
     private fun findHintText(scope: ViewGroup, iconRight: Int): TextView? {
@@ -113,8 +120,7 @@ internal class XhsSearchChrome(
             val view = pending.removeAt(pending.size - 1)
             if (view === icon || view is AdapterOwnedOverlay || view is GlassHostLayout) continue
             if (view is TextView) {
-                if (!view.text.isNullOrBlank() && view.isShown && view.width > 0 &&
-                    view.background != null) {
+                if (!view.text.isNullOrBlank() && view.isShown && view.width > 0) {
                     view.getLocationInWindow(location)
                     if (location[0] + view.width <= iconRight + (4f * view.resources.displayMetrics.density).toInt())
                         return view
@@ -142,17 +148,18 @@ internal class XhsSearchChrome(
     }
 
     private fun collect(scope: ViewGroup, out: MutableList<TextView>, depth: Int, budget: Int): Int {
-        if (budget <= 0 || depth > 8) return budget
+        var remaining = budget
+        if (remaining <= 0 || depth > 8) return remaining
         for (i in 0 until scope.childCount) {
-            if (budget <= 0) return budget
+            if (remaining <= 0) return remaining
             val child = scope.getChildAt(i)
             if (child === tabs || child === menu || child === icon) continue
             if (child is AdapterOwnedOverlay || child is GlassHostLayout) continue
             if (contains(child, tabs) || (menu != null && contains(child, menu))) continue
             if (child is TextView) out.add(child)
-            else if (child is ViewGroup) budget = collect(child, out, depth + 1, budget - 1)
+            else if (child is ViewGroup) remaining = collect(child, out, depth + 1, remaining - 1)
         }
-        return budget
+        return remaining
     }
 
     private fun contains(ancestor: View, target: View): Boolean {
@@ -178,6 +185,28 @@ internal class XhsSearchChrome(
             if (containsPager(scope.getChildAt(i))) return true
         }
         return false
+    }
+
+    private var pathReported = false
+    private fun reportPathOnce() {
+        if (pathReported) return
+        pathReported = true
+        val chain = ArrayList<String>(6)
+        var view: View? = icon
+        var depth = 0
+        while (view != null && view !== root && depth < 6) {
+            chain.add("${view.javaClass.simpleName}[${view.width}x${view.height}]" +
+                if (view.background != null) "*" else "")
+            view = view.parent as? View
+            depth++
+        }
+        val siblings = (icon.parent as? ViewGroup)?.let { parent ->
+            (0 until parent.childCount).joinToString(",") { index ->
+                val child = parent.getChildAt(index)
+                child.javaClass.simpleName + if (child is TextView) ":" + (child.text ?: "") else ""
+            }
+        }
+        android.util.Log.i("LiquidTabXhsTop", "search path=${chain.joinToString(">")} siblings=[$siblings]")
     }
 
     private fun report(kind: String, hidden: View?) {
