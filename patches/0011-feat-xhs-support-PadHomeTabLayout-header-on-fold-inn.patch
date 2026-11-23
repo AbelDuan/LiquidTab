@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:40:54 +0800
+Subject: [PATCH 11/12] feat(xhs): support PadHomeTabLayout header on fold
+ inner screen
+
+---
+ .../hook/adapters/xhs/XhsTopBar.kt            | 35 +++++++++++--------
+ 1 file changed, 21 insertions(+), 14 deletions(-)
+
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
+index f253da4..3fb654f 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
+@@ -38,20 +38,27 @@ internal object XhsTopBar {
+                 reference.get()?.takeIf { !it.stopped && it.ready && it.config.enabled && it.root === view.rootView }?.channelMotion
+             }
+         }
+-        runCatching {
+-            val type = Class.forName("com.xingin.xhs.homepage.tabbar.view.HomeTabLayout", false, loader)
+-            XposedBridge.hookAllConstructors(type, object : XC_MethodHook() {
+-                override fun afterHookedMethod(param: MethodHookParam) {
+-                    val row = param.thisObject as? ViewGroup ?: return
+-                    if (observed.put(row, true) == true) return
+-                    row.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+-                        override fun onViewAttachedToWindow(v: View) { row.post { attach(row) } }
+-                        override fun onViewDetachedFromWindow(v: View) { sessions.remove(row)?.get()?.stop() }
+-                    })
+-                    row.post { attach(row) }
+-                }
+-            })
+-        }.onFailure { android.util.Log.w("LiquidTabXhsTop", "native header retained", it) }
++        // 手机布局是 HomeTabLayout，内屏/平板布局是 PadHomeTabLayout；两者是兄弟类，
++        // 没有继承关系，必须分别 hook，否则内屏会完全退回原生头部。
++        listOf(
++            "com.xingin.xhs.homepage.tabbar.view.HomeTabLayout",
++            "com.xingin.xhs.homepage.tabbar.view.PadHomeTabLayout",
++        ).forEach { name ->
++            runCatching {
++                val type = Class.forName(name, false, loader)
++                XposedBridge.hookAllConstructors(type, object : XC_MethodHook() {
++                    override fun afterHookedMethod(param: MethodHookParam) {
++                        val row = param.thisObject as? ViewGroup ?: return
++                        if (observed.put(row, true) == true) return
++                        row.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
++                            override fun onViewAttachedToWindow(v: View) { row.post { attach(row) } }
++                            override fun onViewDetachedFromWindow(v: View) { sessions.remove(row)?.get()?.stop() }
++                        })
++                        row.post { attach(row) }
++                    }
++                })
++            }.onFailure { android.util.Log.w("LiquidTabXhsTop", "$name unavailable", it) }
++        }
+     }
+     private fun attach(row: ViewGroup) {
+         if (!row.isAttachedToWindow || sessions[row]?.get() != null) return

@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:09:26 +0800
+Subject: [PATCH 05/12] fix(ci): use preinstalled sdkmanager and platform 37.0
+
+---
+ .github/workflows/build-apk.yml | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
+index 131efad..e0fa130 100644
+--- a/.github/workflows/build-apk.yml
++++ b/.github/workflows/build-apk.yml
+@@ -32,13 +32,19 @@ jobs:
+           distribution: temurin
+           java-version: '21'
+ 
+-      - name: Set up Android SDK
+-        uses: android-actions/setup-android@v3
+-
+       - name: Install platform 37 and build tools
+         run: |
+-          yes | sdkmanager --licenses >/dev/null || true
+-          sdkmanager --channel=3 "platforms;android-37" "build-tools;37.0.0"
++          set -euo pipefail
++          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
++          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
++          test -x "$SDKM"
++          yes | "$SDKM" --licenses >/dev/null || true
++          "$SDKM" "platforms;android-37.0" "build-tools;37.0.0"
++          # AGP 的 compileSdk = 37 按 android-37 目录查找；SDK 包名是 37.0。
++          if [ -d "$SDK/platforms/android-37.0" ] && [ ! -e "$SDK/platforms/android-37" ]; then
++            ln -s "$SDK/platforms/android-37.0" "$SDK/platforms/android-37"
++          fi
++          ls "$SDK/platforms" "$SDK/build-tools"
+ 
+       - name: Set up Gradle
+         uses: gradle/actions/setup-gradle@v4

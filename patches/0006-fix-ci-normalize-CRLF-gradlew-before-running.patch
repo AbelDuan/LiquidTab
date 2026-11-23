@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:12:49 +0800
+Subject: [PATCH 06/12] fix(ci): normalize CRLF gradlew before running
+
+---
+ .github/workflows/build-apk.yml | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
+index e0fa130..c150f46 100644
+--- a/.github/workflows/build-apk.yml
++++ b/.github/workflows/build-apk.yml
+@@ -58,7 +58,11 @@ jobs:
+           echo "code=$CODE" >> "$GITHUB_OUTPUT"
+ 
+       - name: Assemble release
+-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
++        run: |
++          # 上游发布的 gradlew 是 CRLF，Linux 上 shebang 会带 \r。
++          sed -i 's/\r$//' gradlew
++          chmod +x gradlew
++          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+ 
+       - name: Sign APK
+         if: env.KEYSTORE_B64 != ''

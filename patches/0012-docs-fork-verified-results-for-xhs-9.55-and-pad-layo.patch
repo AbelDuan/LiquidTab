@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:53:33 +0800
+Subject: [PATCH 12/12] docs(fork): verified results for xhs 9.55 and pad
+ layout
+
+---
+ fork/PATCHES.md  | 21 ++++++++++++++++-----
+ fork/VERIFIED.md | 19 ++++++++++---------
+ fork/apps/xhs.md |  4 ++--
+ 3 files changed, 28 insertions(+), 16 deletions(-)
+
+diff --git a/fork/PATCHES.md b/fork/PATCHES.md
+index 3c26606..cebc893 100644
+--- a/fork/PATCHES.md
++++ b/fork/PATCHES.md
+@@ -2,13 +2,24 @@
+ 
+ 基线：见 [`upstream-base`](upstream-base)。
+ 
+-| 提交 | 范围 | 说明 |
+-| --- | --- | --- |
+-| `0db21fa fix(xhs): hide native search hint layer` | 小红书 9.50 | 只隐藏搜索图标时，顶栏会剩一个带背景的搜索提示 `TextView`（文案“搜索笔记，用户和商品”）。按结构隐藏整个搜索层，保留图标可点。 |
+-| `39fe371 fix(ci): normalize CRLF gradlew` | CI | 上游 `gradlew` 是 CRLF，Linux runner 无法执行。 |
++## 小红书
++
++| 提交 | 说明 |
++| --- | --- |
++| `0db21fa` `fix(xhs): hide native search hint layer` | 只隐藏搜索图标时，9.50/9.55 顶栏会剩一个带背景的搜索胶囊（提示文案或热词）。新增 `XhsSearchChrome`，按结构隐藏整层/胶囊。 |
++| `5b76f2e` `fix(xhs): discover native search capsule in tab band` | 9.55 的放大镜是 `TextView` 的 compound drawable，不是独立图标；改为扫描顶栏带内、标签右侧、带背景的文字胶囊。 |
++| `f8be902` `feat(xhs): support PadHomeTabLayout` | 内屏走 `PadHomeTabLayout`，与 `HomeTabLayout` 是兄弟类；补 hook，否则内屏完全退回原生头部。 |
++
++## CI / 仓库
++
++| 提交 | 说明 |
++| --- | --- |
++| `1d8900d` | custom 分支、构建与同步脚本、README |
++| `390abc5` | 上游 release 监视 workflow |
++| `a8f150a` / `39fe371` / `b19f6e6` | Linux runner：SDK 37.0 安装、CRLF `gradlew`、跳过 `lintVitalRelease` |
+ 
+ 补丁原则：
+ 
+ - 只动应用目录，共享层改动要单独说明；
+ - 按结构绑定，不按版本号；
+-- 失败保留原生 UI 并打日志。
++- 失败保留原生 UI，不吞异常。
+diff --git a/fork/VERIFIED.md b/fork/VERIFIED.md
+index 7878329..d2d270b 100644
+--- a/fork/VERIFIED.md
++++ b/fork/VERIFIED.md
+@@ -2,14 +2,15 @@
+ 
+ > 只记录真正在设备上看过的组合。应用升级后，相关行需要重新验。
+ 
+-| 应用 | 包名 | 应用版本 | 模块版本/提交 | 页面 | 结果 | 备注 |
+-| --- | --- | --- | --- | --- | --- | --- |
+-| 小红书 | `com.xingin.xhs` | 9.50.0（本机 APK 基线） | custom（搜索层补丁） | 首页/发现 | 待实机验证 | 顶栏搜索层结构已按 `r/lcv|l cw|lcx|nyc` 布局核对 |
++| 应用 | 应用版本 | 模块构建 | 屏幕/条件 | 结果 |
++| --- | --- | --- | --- | --- |
++| 小红书 | 9.55.0 | 官方 2.1.2（基线） | 外屏 1168×1712，密度 350 | 右上角搜索键旁边有原生胶囊：放大镜 + 热词“调酒…”，背景框明显 |
++| 小红书 | 9.55.0 | 本仓库 custom（`0db21fa` 起） | 外屏 1168×1712，密度 350 | 原生胶囊消失，只保留玻璃搜索键；底栏、顶栏正常 |
++| 小红书 | 9.55.0 | 本仓库 custom（`f8be902`） | 外屏 + `wm density 311`（≈600dp，触发平板/内屏布局） | 顶栏 4 个玻璃宿主都出现，搜索为玻璃圆钮，无原生胶囊 |
++| 小红书 | 9.55.0 | 本仓库 custom（`f8be902`） | 真实内屏 1672×2364 | **未实测**：测试时内屏 display state=OFF；需要展开后再看一眼 |
+ 
+-新增记录时写清：设备折叠/展开状态、深浅色、是否开了顶栏、点了哪些按钮。
++复现/复核要点：
+ 
+-## 适配优先级
+-
+-1. 先保底栏：底栏不出现/错位优先修，顶栏是增强。
+-2. 顶栏只在用户开启该应用 `*_top_bar` 时生效；失败要回退原生。
+-3. 隐藏原生控件时只动 alpha，保住原生点击目标。
++- 官方版在搜索键右侧会留一个带背景的搜索胶囊；本仓库补丁后该胶囊整层消失，搜索点击仍走原生。
++- 测试时改过 `wm density 311`，已还原为 Override density **350**（物理 440）；`screen_off_timeout` 已还原 **60000**。
++- 折叠屏内屏走 `PadHomeTabLayout`，已加入 hook；如果内屏仍有残留，先看 `fork/apps/xhs.md` 的日志命令。
+diff --git a/fork/apps/xhs.md b/fork/apps/xhs.md
+index b2d8065..5648c01 100644
+--- a/fork/apps/xhs.md
++++ b/fork/apps/xhs.md
+@@ -78,5 +78,5 @@ grep -i "offlineglass" "$F" | tail -30
+ 
+ - `menuSource`/`searchSource` 是结构推断，应用改版后可能先失效；`ready` 失败时顶栏整体不出现，原生界面保留。
+ - 搜索胶囊的判定必须在顶栏带内，否则会误伤信息流卡片文字；当前实现跳过 RecyclerView 子树。
+-- 折叠屏内屏若走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类），当前 `XhsTopBar` 不接管；
+-  这种情况需要单独验证，不要假设手机布局的结构。
++- 折叠屏内屏走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类）。`XhsTopBar.install` 现在同时 hook
++  两个类；600dp 宽度模拟下顶栏和搜索胶囊隐藏都正常，但真实内屏仍需展开复核。

@@ -1,0 +1,423 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:01:20 +0800
+Subject: [PATCH 01/12] chore(fork): add custom branch, CI build and upstream
+ sync workflow
+
+---
+ .github/workflows/build-apk.yml | 109 ++++++++++++++++++++++++++++++++
+ fork/ADAPTING.md                |  93 +++++++++++++++++++++++++++
+ fork/PATCHES.md                 |  13 ++++
+ fork/README.md                  |  79 +++++++++++++++++++++++
+ fork/upstream-base              |   1 +
+ tools/export-patches.sh         |  10 +++
+ tools/sync-upstream.sh          |  53 ++++++++++++++++
+ 7 files changed, 358 insertions(+)
+ create mode 100644 .github/workflows/build-apk.yml
+ create mode 100644 fork/ADAPTING.md
+ create mode 100644 fork/PATCHES.md
+ create mode 100644 fork/README.md
+ create mode 100644 fork/upstream-base
+ create mode 100755 tools/export-patches.sh
+ create mode 100755 tools/sync-upstream.sh
+
+diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
+new file mode 100644
+index 0000000..b90826e
+--- /dev/null
++++ b/.github/workflows/build-apk.yml
+@@ -0,0 +1,109 @@
++name: build-apk
++
++# 只在自定义生产分支和自定义发布标签上跑，避免上游同步提交触发重复构建。
++on:
++  push:
++    branches: [custom]
++    tags: ['custom-v*']
++  workflow_dispatch:
++
++permissions:
++  contents: write
++
++concurrency:
++  group: build-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    timeout-minutes: 45
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Set up JDK 21
++        uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: '21'
++
++      - name: Set up Android SDK
++        uses: android-actions/setup-android@v3
++
++      - name: Install platform 37 and build tools
++        run: |
++          yes | sdkmanager --licenses >/dev/null || true
++          sdkmanager --channel=3 "platforms;android-37" "build-tools;37.0.0"
++
++      - name: Set up Gradle
++        uses: gradle/actions/setup-gradle@v4
++
++      - name: Read version
++        id: version
++        run: |
++          NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
++          CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -1)
++          echo "name=$NAME" >> "$GITHUB_OUTPUT"
++          echo "code=$CODE" >> "$GITHUB_OUTPUT"
++
++      - name: Assemble release
++        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
++
++      - name: Sign APK
++        if: ${{ secrets.KEYSTORE_B64 != '' }}
++        env:
++          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
++          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
++          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
++          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
++          VERSION_NAME: ${{ steps.version.outputs.name }}
++          VERSION_CODE: ${{ steps.version.outputs.code }}
++        run: |
++          set -euo pipefail
++          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/liquidtab.keystore"
++          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
++          APKSIGNER="$ANDROID_HOME/build-tools/$BT/apksigner"
++          SRC=$(find app/build/outputs/apk/release -name '*-unsigned.apk' | head -1)
++          test -n "$SRC"
++          OUT="LiquidTab-${VERSION_NAME}-${VERSION_CODE}-custom.apk"
++          "$APKSIGNER" sign \
++            --ks "$RUNNER_TEMP/liquidtab.keystore" \
++            --ks-key-alias "$KEY_ALIAS" \
++            --ks-pass env:KEYSTORE_PASSWORD \
++            --key-pass env:KEY_PASSWORD \
++            --out "$OUT" "$SRC"
++          "$APKSIGNER" verify --print-certs "$OUT"
++          sha256sum "$OUT" > "$OUT.sha256"
++          cat "$OUT.sha256"
++
++      - name: Fallback unsigned APK
++        if: ${{ secrets.KEYSTORE_B64 == '' }}
++        run: |
++          set -euo pipefail
++          SRC=$(find app/build/outputs/apk/release -name '*-unsigned.apk' | head -1)
++          test -n "$SRC"
++          cp "$SRC" "LiquidTab-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}-unsigned.apk"
++          sha256sum LiquidTab-*.apk > SHA256SUMS.txt
++          cat SHA256SUMS.txt
++
++      - name: Upload workflow artifact
++        uses: actions/upload-artifact@v4
++        with:
++          name: LiquidTab-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
++          path: |
++            LiquidTab-*.apk
++            LiquidTab-*.apk.sha256
++            SHA256SUMS.txt
++          if-no-files-found: error
++
++      - name: Publish GitHub release
++        if: startsWith(github.ref, 'refs/tags/custom-v')
++        uses: softprops/action-gh-release@v2
++        with:
++          files: |
++            LiquidTab-*.apk
++            LiquidTab-*.apk.sha256
++          generate_release_notes: true
++          body: |
++            基于上游 tag `${{ github.event.repository.description }}` 的自定义构建。
++            安装前请确认设备允许跨签名覆盖安装，或先备份数据。
+diff --git a/fork/ADAPTING.md b/fork/ADAPTING.md
+new file mode 100644
+index 0000000..cc56eaf
+--- /dev/null
++++ b/fork/ADAPTING.md
+@@ -0,0 +1,93 @@
++# 新应用版本适配手册
++
++目标：应用改版、上游 LiquidTab 还没更新时，我们能在本 fork 里独立适配，并且下次上游更新时补丁仍然容易搬。
++
++## 0. 先判断问题属于哪一层
++
++| 现象 | 优先看 |
++| --- | --- |
++| 整个底栏/顶栏不出现、错位 | 导航发现、Hook 信号、安装器 |
++| 原生控件没被替换干净（多一个框、多一行字） | 对应应用的 `*TopBar` / `*Chrome` / `*Adapter` |
++| 替换后点不动、点错页 | 点击源（`performClick` 目标）和页面状态 |
++| 只有某个子页面异常 | 应用目录里的页面例外/视口代码 |
++
++先看应用目录，不要一上来改共享 `GlassHostLayout`。
++
++## 1. 抓现场（必须做）
++
++在目标页面停留，然后任选其一：
++
++```bash
++# 当前 Activity + 视图树（最有用）
++adb shell dumpsys activity top | head -200
++
++# 可交互元素的 resource-id / text / bounds
++adb shell uiautomator dump /sdcard/window_dump.xml
++adb pull /sdcard/window_dump.xml
++
++# 看模块自己的日志
++adb logcat -s LiquidTabXhsTop LiquidTabDouyin OfflineGlass
++```
++
++有 APK 时，直接看布局比在设备上猜更快：`resources.arsc` 里布局名可能被混淆（小红书是 `r/*.xml`），按资源 ID 的 4 字节小端在 `res/layout*.xml` 或 `r/*.xml` 里搜，再用 AXML 解码器打印层级。
++
++## 2. 找“结构锚点”，不要记版本号
++
++上游约定（必须遵守）：
++
++- 类名/控件层级优先，`R.id` 数值只作提示；
++- 不写 `if (versionName == ...)`；
++- 找不到就保留原生界面并打日志，不猜、不隐藏整页。
++
++小红书的例子（9.50）：
++
++- 顶栏容器：`FrameLayout`，内含 `HomeTabLayout`（tabs）和搜索层；
++- 搜索图标：`ImageView`，父层是搜索条的 `ConstraintLayout`；
++- 残留“搜索提示框”：与图标同层的 `TextView`（带 background，文字是搜索提示）；
++- 只隐藏图标，不隐藏同层文字，就会剩下一个背景框。
++
++## 3. 改在正确的那一层
++
++- 应用专属逻辑只放在 `app/src/main/java/io/github/offlineglass/hook/adapters/<key>/`；
++- 隐藏原生控件统一走该应用 Session 的 `hide(...)`（记录原始 alpha/visibility，退出时恢复），不要直接 `setVisibility(GONE)`；
++- 要保留点击能力时只把 `alpha` 设为 0，不要设 `INVISIBLE`/`GONE`；
++- 新增隐藏逻辑要能处理“控件晚到”：在现有 `onPreDraw`/`scan()` 节流里执行，不要另起无限循环。
++
++## 4. 本地验证
++
++```bash
++./gradlew :app:assembleRelease
++```
++
++装到设备后：
++
++1. 打开目标应用首页，确认没有多余框/字；
++2. 点我们自己的按钮，确认走的是原生逻辑；
++3. 切到二级页再返回，确认没有恢复一半；
++4. 深色/浅色、折叠/展开各看一次；
++5. `adb logcat` 里没有 `LiquidTab<App>` 的契约拒绝日志。
++
++编译通过不等于运行时通过，必须写清“在哪个应用版本、哪个页面”实测过。
++
++## 5. 提交与出包
++
++```bash
++git switch custom
++git add -A
++git commit -m "fix(xhs): hide native search hint layer beside the glass search key"
++git push origin custom
++```
++
++CI 自动出 APK。确认没问题再打标签：
++
++```bash
++git tag custom-v2.1.2.1
++git push origin custom-v2.1.2.1
++```
++
++## 6. 让补丁容易搬回上游
++
++- 一个应用一个提交，提交信息写 `fix(<key>): ...` / `feat(<key>): ...`；
++- 不改上游的版本号、签名配置、README（除非必要）；
++- 共享文件只做最小改动，并在提交说明里写“为什么必须改共享层”；
++- 每次同步上游后跑一遍 `tools/export-patches.sh`，把补丁留在 `patches/` 里，冲突时可直接 `git apply` 对照。
+diff --git a/fork/PATCHES.md b/fork/PATCHES.md
+new file mode 100644
+index 0000000..0a1b6d7
+--- /dev/null
++++ b/fork/PATCHES.md
+@@ -0,0 +1,13 @@
++# 补丁清单
++
++基线：见 [`upstream-base`](upstream-base)。
++
++| 提交 | 范围 | 说明 |
++| --- | --- | --- |
++| `fix(xhs): hide native search hint layer` | 小红书 | 只隐藏搜索图标时，9.50 顶栏会剩一个带背景的搜索提示 `TextView`。改为按结构隐藏整个搜索层，保留图标可点。 |
++
++补丁原则：
++
++- 只动应用目录，共享层改动要单独说明；
++- 按结构绑定，不按版本号；
++- 失败保留原生 UI 并打日志。
+diff --git a/fork/README.md b/fork/README.md
+new file mode 100644
+index 0000000..ef88709
+--- /dev/null
++++ b/fork/README.md
+@@ -0,0 +1,79 @@
++# LiquidTab 自定义维护仓库
++
++上游：<https://github.com/big-dictator/LiquidTab>（GPL-3.0）
++本仓库：<https://github.com/AbelDuan/LiquidTab>
++
++这个 fork 只做三件事：
++
++1. 保留上游全部历史与 tag，随时能看清上游改了什么。
++2. `custom` 分支放我们自己的补丁（默认分支），每个补丁一个独立提交，便于回滚。
++3. GitHub Actions 自动出未签名/已签名 APK，原仓库没适配的新版应用，我们自己改完就能装。
++
++## 分支约定
++
++| 分支/标签 | 用途 |
++| --- | --- |
++| `main` | 上游原样镜像，只用于 `git fetch upstream` 和对照，不直接构建 |
++| `custom` | 生产分支：`v2.1.2` + 我们的补丁，默认分支，CI 从这里出包 |
++| `custom-v*` | 我们自己的发布标签，推送后自动创建 GitHub Release |
++| `v*`（上游标签） | 上游每个版本的源码快照，`fork/upstream-base` 记录当前补丁基于哪个标签 |
++
++`fork/upstream-base` 是当前补丁栈的基线。同步上游时脚本会读它，并把补丁逐个 cherry-pick 到新 tag 上。
++
++## 快速同步上游
++
++上游发新版本（比如 `v2.2`）后：
++
++```bash
++git remote add upstream https://github.com/big-dictator/LiquidTab.git  # 只需一次
++git fetch upstream --tags
++tools/sync-upstream.sh v2.2
++git push origin custom --follow-tags
++```
++
++脚本会：
++
++1. 从 `v2.2` 建 `sync/v2.2` 分支；
++2. 把 `v2.1.2..custom` 的补丁逐个 cherry-pick 过去；
++3. 更新 `fork/upstream-base`；
++4. 把 `custom` 重置到同步结果（只在成功后执行）。
++
++有冲突时脚本会停下，保留 `sync/v2.2` 现场。按提示解决后 `git cherry-pick --continue`，再手工把 `custom` 指过去。**不要**用 GitHub 网页的 “Sync fork” 覆盖 `custom`。
++
++补丁导出/重放：
++
++```bash
++tools/export-patches.sh        # 导出到 patches/
++```
++
++## 出包
++
++推送到 `custom` 或手动 `workflow_dispatch` 即构建：
++
++- 有 `KEYSTORE_B64` 等 secrets：直接产出已签名 APK + SHA256；
++- 没有 secrets：产出 `-unsigned.apk`，下载后本地用 `apksigner` 签。
++
++发布标签：
++
++```bash
++git tag custom-v2.1.2.1
++git push origin custom-v2.1.2.1
++```
++
++CI 会创建 Release 并附 APK。
++
++## 安装
++
++本机（HyperOS / KernelSU）允许跨签名覆盖安装，可直接盖官方包并保留数据；其他设备若签名不同，需要先卸载官方版（会丢模块设置）。
++
++## 补丁清单
++
++见 [`PATCHES.md`](PATCHES.md)。每个补丁都应满足：
++
++- 只动某个应用目录，或只动该应用会用到的共享点；
++- 不按版本号 gate 行为，用结构/语义绑定；
++- 失败时保留原生界面并打日志，不白屏、不吞异常。
++
++## 新应用版本适配
++
++上游没跟上某个应用改版时，看 [`ADAPTING.md`](ADAPTING.md)。
+diff --git a/fork/upstream-base b/fork/upstream-base
+new file mode 100644
+index 0000000..5969682
+--- /dev/null
++++ b/fork/upstream-base
+@@ -0,0 +1 @@
++v2.1.2
+diff --git a/tools/export-patches.sh b/tools/export-patches.sh
+new file mode 100755
+index 0000000..0b25849
+--- /dev/null
++++ b/tools/export-patches.sh
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++# 把 fork/upstream-base..custom 的补丁导出成可重放的 .patch 文件。
++set -euo pipefail
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++cd "$ROOT"
++BASE="$(tr -d '[:space:]' < fork/upstream-base)"
++mkdir -p patches
++rm -f patches/*.patch
++git format-patch --no-signature --zero-commit -o patches "$BASE..custom" >/dev/null
++ls -1 patches
+diff --git a/tools/sync-upstream.sh b/tools/sync-upstream.sh
+new file mode 100755
+index 0000000..2eadf9c
+--- /dev/null
++++ b/tools/sync-upstream.sh
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++# 把 custom 分支上的补丁栈搬到上游新 tag 上。
++# 用法: tools/sync-upstream.sh v2.2 [远端名，默认 upstream]
++set -euo pipefail
++
++TAG="${1:?用法: tools/sync-upstream.sh <上游tag> [远端名]}"
++REMOTE="${2:-upstream}"
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++cd "$ROOT"
++
++BASE_FILE="fork/upstream-base"
++[ -f "$BASE_FILE" ] || { echo "缺少 $BASE_FILE" >&2; exit 1; }
++BASE="$(tr -d '[:space:]' < "$BASE_FILE")"
++
++git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || {
++  echo "本地没有 $TAG，先执行: git fetch $REMOTE --tags" >&2; exit 1
++}
++git rev-parse -q --verify "refs/heads/custom" >/dev/null || { echo "缺少 custom 分支" >&2; exit 1; }
++[ "$BASE" != "$TAG" ] || { echo "基线已经是 $TAG，无需同步" >&2; exit 1; }
++
++mapfile -t PATCHES < <(git rev-list --reverse "$BASE..custom")
++if [ "${#PATCHES[@]}" -eq 0 ]; then
++  echo "custom 相对 $BASE 没有补丁，直接重置到 $TAG"
++  git switch -c "sync/$TAG" "$TAG"
++else
++  echo "基线: $BASE -> $TAG，补丁数: ${#PATCHES[@]}"
++  git switch -c "sync/$TAG" "$TAG"
++  for commit in "${PATCHES[@]}"; do
++    if ! git cherry-pick "$commit"; then
++      cat >&2 <<EOF
++
++cherry-pick $commit 失败，冲突现场已保留在 sync/$TAG。
++处理步骤:
++  1. 按冲突文件修正，保留我们补丁的意图，同时接受上游的新结构;
++  2. git add <文件> && git cherry-pick --continue
++  3. 全部完成后:
++       echo $TAG > fork/upstream-base && git add fork/upstream-base
++       git commit -m "chore: bump upstream base to $TAG"
++       git switch custom && git reset --hard sync/$TAG
++       git push origin custom
++  放弃本次同步: git cherry-pick --abort && git switch custom && git branch -D sync/$TAG
++EOF
++      exit 1
++    fi
++  done
++fi
++
++echo "$TAG" > "$BASE_FILE"
++git add "$BASE_FILE"
++git commit -m "chore: bump upstream base to $TAG"
++git switch custom
++git reset --hard "sync/$TAG"
++echo "完成：custom 已指向 $TAG + 补丁栈。检查后执行 git push origin custom --follow-tags"

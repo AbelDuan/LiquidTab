@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:13:57 +0800
+Subject: [PATCH 07/12] docs(fork): record verified matrix and patch log
+
+---
+ fork/PATCHES.md  |  3 ++-
+ fork/VERIFIED.md | 15 +++++++++++++++
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+ create mode 100644 fork/VERIFIED.md
+
+diff --git a/fork/PATCHES.md b/fork/PATCHES.md
+index 0a1b6d7..3c26606 100644
+--- a/fork/PATCHES.md
++++ b/fork/PATCHES.md
+@@ -4,7 +4,8 @@
+ 
+ | 提交 | 范围 | 说明 |
+ | --- | --- | --- |
+-| `fix(xhs): hide native search hint layer` | 小红书 | 只隐藏搜索图标时，9.50 顶栏会剩一个带背景的搜索提示 `TextView`。改为按结构隐藏整个搜索层，保留图标可点。 |
++| `0db21fa fix(xhs): hide native search hint layer` | 小红书 9.50 | 只隐藏搜索图标时，顶栏会剩一个带背景的搜索提示 `TextView`（文案“搜索笔记，用户和商品”）。按结构隐藏整个搜索层，保留图标可点。 |
++| `39fe371 fix(ci): normalize CRLF gradlew` | CI | 上游 `gradlew` 是 CRLF，Linux runner 无法执行。 |
+ 
+ 补丁原则：
+ 
+diff --git a/fork/VERIFIED.md b/fork/VERIFIED.md
+new file mode 100644
+index 0000000..7878329
+--- /dev/null
++++ b/fork/VERIFIED.md
+@@ -0,0 +1,15 @@
++# 实测记录
++
++> 只记录真正在设备上看过的组合。应用升级后，相关行需要重新验。
++
++| 应用 | 包名 | 应用版本 | 模块版本/提交 | 页面 | 结果 | 备注 |
++| --- | --- | --- | --- | --- | --- | --- |
++| 小红书 | `com.xingin.xhs` | 9.50.0（本机 APK 基线） | custom（搜索层补丁） | 首页/发现 | 待实机验证 | 顶栏搜索层结构已按 `r/lcv|l cw|lcx|nyc` 布局核对 |
++
++新增记录时写清：设备折叠/展开状态、深浅色、是否开了顶栏、点了哪些按钮。
++
++## 适配优先级
++
++1. 先保底栏：底栏不出现/错位优先修，顶栏是增强。
++2. 顶栏只在用户开启该应用 `*_top_bar` 时生效；失败要回退原生。
++3. 隐藏原生控件时只动 alpha，保住原生点击目标。
