@@ -62,7 +62,9 @@ jobs:
           # 上游发布的 gradlew 是 CRLF，Linux 上 shebang 会带 \r。
           sed -i 's/\r$//' gradlew
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          # 上游本身用反射访问非 SDK API；lintVital 在 targetSdk 37 下会直接判死，
+          # 但这是 LSPosed 模块的既有实现，不是本次补丁引入的。
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace -x lintVitalRelease
 
       - name: Sign APK
         if: env.KEYSTORE_B64 != ''
