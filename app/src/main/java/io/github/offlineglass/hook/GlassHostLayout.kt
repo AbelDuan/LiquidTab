@@ -13569,7 +13569,7 @@ internal fun surfaceContainerColor(dark: Boolean): Int {
         // drawn behind the row is the surface the glass sits on, so it decides first.
         val surfaces = ArrayList<Float>(4)
 
-        var surfaceView: View? = source
+        var surfaceView: View? = source ?: (parent as? View)
 
         var surfaceDepth = 0
 
@@ -13634,7 +13634,8 @@ internal fun isDarkGlass(): Boolean {
 
         GlassConfig.THEME_DARK -> true
 
-        else -> appNavigationState?.resolveAutoDarkMode(this) ?: if (
+        else -> pageSurfaceDark()
+            ?: appNavigationState?.resolveAutoDarkMode(this) ?: if (
 
             targetAdapter?.usesContentDarkMode == true ||
 
@@ -13654,6 +13655,61 @@ internal fun isDarkGlass(): Boolean {
         return reportDarkMode(result, "auto")
     }
 
+    /**
+     * Light or dark as painted by the app itself.
+     *
+     * A page can render its own light palette while the process reports
+     * NIGHT_YES (Weibo under the system auto switch), and a bar the module
+     * redraws hides the labels the older probe relied on. The opaque colour
+     * behind the host is the surface the glass actually sits on, so it wins
+     * over every configuration flag when it is available.
+     */
+    private var surfaceDarkCache: Pair<Long, Boolean?>? = null
+
+    private fun pageSurfaceDark(): Boolean? {
+        val now = SystemClock.uptimeMillis()
+        surfaceDarkCache?.let { (at, value) -> if (now - at < 300L) return value }
+        val value = runCatching { resolvePageSurfaceDark() }.getOrNull()
+        surfaceDarkCache = now to value
+        return value
+    }
+
+    private fun resolvePageSurfaceDark(): Boolean? {
+        var view: View? = navigationSource ?: (parent as? View)
+        var depth = 0
+        while (view != null && depth < 6) {
+            colorOfDrawable(view.background)?.let { return it }
+            view = view.parent as? View
+            depth++
+        }
+        val window = context.findActivity()?.window
+        colorOfDrawable(window?.decorView?.background)?.let { return it }
+        val styled = runCatching {
+            val typed = window?.context?.theme ?: return@runCatching null
+            val attrs = typed.obtainStyledAttributes(intArrayOf(android.R.attr.colorBackground))
+            val color = attrs.getColor(0, 0)
+            attrs.recycle()
+            color
+        }.getOrNull()
+        return colorOfSurface(styled)
+    }
+
+    private fun colorOfDrawable(drawable: android.graphics.drawable.Drawable?): Boolean? = when (drawable) {
+        is android.graphics.drawable.ColorDrawable -> colorOfSurface(drawable.color)
+        is android.graphics.drawable.GradientDrawable -> runCatching {
+            drawable.color?.defaultColor
+        }.getOrNull()?.let { colorOfSurface(it) }
+        else -> null
+    }
+
+    private fun colorOfSurface(color: Int?): Boolean? {
+        if (color == null || Color.alpha(color) < 200) return null
+        val luminance = 0.2126f * Color.red(color) +
+            0.7152f * Color.green(color) +
+            0.0722f * Color.blue(color)
+        return luminance < DARK_SURFACE_LUMINANCE
+    }
+
     /** Bounded diagnostic: a bar that is darker than its page is otherwise only a screenshot. */
     private var darkReports = 0
     private var sampledSurfaces = 0
@@ -13671,7 +13727,8 @@ internal fun isDarkGlass(): Boolean {
                     Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES) +
                 " forceDarkDisabled=" + (targetAdapter?.disablePlatformForceDark == true) +
                 " surfaces=" + sampledSurfaces + " labels=" + sampledLabels +
-                " source=" + (navigationSource != null))
+                " source=" + (navigationSource != null) +
+                " pageSurfaceDark=" + surfaceDarkCache?.second)
         }
         return dark
     }
