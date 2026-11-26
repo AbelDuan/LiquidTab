@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 11:57:19 +0800
+Subject: [PATCH 20/21] fix(geometry): re-derive the bar when the host window
+ resizes
+
+A cold start on the inner display or straight into Meituan's parallel
+window creates the bar before the content is laid out at its final width,
+so the install-time geometry stayed in place afterwards; opening the app
+on the outer screen first and then unfolding worked only because that
+path rebinds the host.
+
+The host now watches its content parent's layout and re-runs its own
+geometry on a real size change, and Meituan refreshes geometry on rebind.
+---
+ .../offlineglass/hook/GlassHostLayout.kt       | 18 ++++++++++++++++++
+ .../meituan_main/MeituanMainAdapter.kt         |  3 +++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+index 39cace5..e321fac 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+@@ -2458,6 +2458,11 @@ internal val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat(
+ 
+ 
+     override fun onAttachedToWindow() {
++        (parent as? ViewGroup)?.let { group ->
++            contentSize = group.width * 31 + group.height
++            group.removeOnLayoutChangeListener(contentSizeListener)
++            group.addOnLayoutChangeListener(contentSizeListener)
++        }
+ 
+         if (context.packageName == MI_THEME_PACKAGE ||
+ 
+@@ -2857,6 +2862,7 @@ internal val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat(
+     }
+ 
+     override fun onDetachedFromWindow() {
++        (parent as? ViewGroup)?.removeOnLayoutChangeListener(contentSizeListener)
+         directSelectionSlide = false
+         opticalSettleGate.reset()
+         exactGeometryWork?.clear()
+@@ -6965,6 +6971,18 @@ internal fun syncOpticalVisibilityCompanions() {
+ 
+     private var geometryReports = 0
+ 
++    /** The bar follows the host window's own size, not the display's: a cold start on the
++     *  fold's inner display or in a parallel window lays the content out narrower than
++     *  displayMetrics after the host was created, and nothing re-ran the geometry. */
++    private var contentSize = 0
++    private val contentSizeListener = View.OnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
++        val group = view as? ViewGroup ?: return@OnLayoutChangeListener
++        val size = group.width * 31 + group.height
++        if (size == contentSize) return@OnLayoutChangeListener
++        contentSize = size
++        updateHostLayoutForConfig()
++    }
++
+     private fun updateHostLayoutForConfig() {
+         if (targetAdapter?.ownsHostLayout == true) return
+ 
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt
+index 27bf1e6..76c3430 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt
+@@ -71,6 +71,9 @@ internal object MeituanMainAdapter : TargetAdapter {
+         else -> 1_000L
+     }
+     override fun createNativeChromeController(): AppNativeChromeController = MeituanMainNativeChrome()
++    // Meituan reloads its home host on a fold switch and on parallel-window entry;
++    // the bar must re-derive its width from the new content size.
++    override val refreshHostGeometryOnRebind = true
+     override fun acceptsNavigationSource(navigation: ViewGroup): Boolean =
+         MeituanMainNativeTabs.isNavigationRow(navigation)
+     override fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? =

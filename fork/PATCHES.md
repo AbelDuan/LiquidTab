@@ -16,6 +16,9 @@
 | --- | --- |
 | `d5004ea` `fix(meituan): follow the native slot count` | 12.69.402 撤掉视频 tab、底栏多包一层 `PTLinearLayout`，行内只剩 4 个槽；不再写死 5，选中/点击/静态切片全部改按 slot 序号，并新增 `navigationHiddenMask` 钩子避免「视频位」误伤真实 tab。 |
 
+| `4d5a934` `fix(geometry): keep the glass bar inside the app's own window` | 栏宽取 content 与 displayMetrics 的交集（原来取较大者），折叠内屏与平行视界不再超宽。 |
+| `584a058` `fix(geometry): re-derive the bar when the host window resizes` | host 监听 content 布局变化并重算几何；美团打开 `refreshHostGeometryOnRebind`。冷启动内屏不再保留错误宽度。 |
+
 ## CI / 仓库
 
 | 提交 | 说明 |

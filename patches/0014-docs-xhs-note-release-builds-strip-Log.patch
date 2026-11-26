@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Mon, 23 Nov 2026 20:07:58 +0800
-Subject: [PATCH 14/17] docs(xhs): note release builds strip Log
+Subject: [PATCH 14/21] docs(xhs): note release builds strip Log
 
 ---
  fork/apps/xhs.md | 3 ++-

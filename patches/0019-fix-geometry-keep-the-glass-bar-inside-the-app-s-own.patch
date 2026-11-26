@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 11:43:51 +0800
+Subject: [PATCH 19/21] fix(geometry): keep the glass bar inside the app's own
+ window
+
+On the fold's inner display (portrait) and in Meituan's parallel window the
+content view is narrower than displayMetrics, yet the floating-bar width
+took the larger of the two. The bar was therefore laid out at display
+width (1712 px over a 1179 px window), overflowing one side and dragging
+its icons out of the window.
+
+The bar now uses the intersection of the content width and the display
+width, and the bottom gap uses the same rule for height. A bounded
+[BarGeometry] report prints content/display/slots whenever a live width
+change lands, so a future overwidth can be read from logcat.
+---
+ .../offlineglass/hook/GlassHostLayout.kt      | 13 ++++++++++
+ .../offlineglass/hook/GlassInstaller.kt       | 25 ++++++++++++++-----
+ 2 files changed, 32 insertions(+), 6 deletions(-)
+
+diff --git a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+index f08165d..39cace5 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+@@ -6963,6 +6963,8 @@ internal fun syncOpticalVisibilityCompanions() {
+ 
+ 
+ 
++    private var geometryReports = 0
++
+     private fun updateHostLayoutForConfig() {
+         if (targetAdapter?.ownsHostLayout == true) return
+ 
+@@ -7019,6 +7021,17 @@ internal fun syncOpticalVisibilityCompanions() {
+ 
+         ) {
+ 
++            // One bounded report per difference: a wrong bar width on a fold or a
++            // parallel window is otherwise only visible as a screenshot.
++            if (geometryReports < 12) {
++                geometryReports++
++                android.util.Log.i("OfflineGlass", "[BarGeometry] " + context.packageName +
++                    " from=" + params.width + " to=" + desiredWidth +
++                    " content=" + content.width +
++                    " display=" + resources.displayMetrics.widthPixels +
++                    " slots=" + layoutSlots + " bar=" + (adapterBarLayout() != null) +
++                    " base=" + baseWidth + " compact=" + symmetricFloatingLayout)
++            }
+             params.width = desiredWidth
+ 
+             params.height = desiredHeight
+diff --git a/app/src/main/java/io/github/offlineglass/hook/GlassInstaller.kt b/app/src/main/java/io/github/offlineglass/hook/GlassInstaller.kt
+index 8ac0bfe..af5b08a 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/GlassInstaller.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/GlassInstaller.kt
+@@ -46,16 +46,32 @@ private const val FILE_MANAGER_BOTTOM_NAV_ID = "bottom_navigation_container"
+  * its bottom margin.
+  */
+ 
++/**
++ * Width the bar may occupy. Split screen, parallel windows and the fold's inner
++ * display keep a content view that is narrower than displayMetrics, so the two
++ * must be intersected: taking the larger one stretches the bar past the app's
++ * own window (the reported parallel-window overwidth).
++ */
++internal fun glassContentWidthPx(view: View): Int {
++    val display = view.resources.displayMetrics.widthPixels
++    val content = view.width.takeIf { it > 0 } ?: return display
++    return min(content, display)
++}
++
+ /** Keeps the glass edge on the same screen-relative line as Coolapk's native bar. */
+ internal fun globalGlassBottomGapPx(view: View): Int {
+     val rootHeight = view.rootView.height.takeIf { it > 0 }
+     val displayHeight = view.resources.displayMetrics.heightPixels
++    // The root may still carry the previous orientation's size right after a
++    // fold or rotation; the gap follows the smaller of the two for the same
++    // reason the width does.
++    val rootHeight2 = rootHeight?.let { min(it, displayHeight) }
+     // Bilibili swaps its root between inset and edge-to-edge page containers at
+     // runtime.  The shorter transient root used to shrink the floating gap until
+     // the process was restarted.  Keep this app on the stable physical-window
+     // reference; the other adapters retain their established parent behaviour.
+     val screenHeight = TargetAdapterRegistry.forPackage(view.context.packageName)
+-        ?.screenReferenceHeight(rootHeight, displayHeight) ?: (rootHeight ?: displayHeight)
++        ?.screenReferenceHeight(rootHeight2, displayHeight) ?: (rootHeight2 ?: displayHeight)
+     return (screenHeight * COOLAPK_REFERENCE_BOTTOM_GAP_PX /
+         COOLAPK_REFERENCE_SCREEN_HEIGHT_PX).roundToInt().coerceAtLeast(1)
+ }
+@@ -72,8 +88,7 @@ internal fun glassHostWidthPx(view: View, slots: Int, config: GlassConfig, densi
+     // Five-item bars need the same breathing room on the left and right as the
+     // approved bar has below it. Besides looking symmetric, this keeps the
+     // damped, enlarged indicator away from the physical screen clip.
+-    val screenWidth = view.rootView.width.takeIf { it > 0 }
+-        ?: view.resources.displayMetrics.widthPixels
++    val screenWidth = glassContentWidthPx(view)
+     val sideGap = globalGlassBottomGapPx(view)
+     val symmetricAvailableWidth = (screenWidth - sideGap * 2)
+         .coerceAtLeast((128f * density).toInt())
+@@ -143,9 +158,7 @@ internal fun symmetricGlassHostWidthPx(
+         // generic compact-width calculation can overwrite it.
+         return glassHostWidthPx(view, referenceSlots, config, density)
+     }
+-    val screenWidth = view.width.coerceAtLeast(
+-        view.resources.displayMetrics.widthPixels,
+-    )
++    val screenWidth = glassContentWidthPx(view)
+     val fullWidth = (screenWidth - 2 * symmetricGlassSideMarginPx(view, density))
+         .coerceAtLeast((4 * config.tabWidth * density).toInt())
+     fun tabRowWidth(count: Int): Int {
