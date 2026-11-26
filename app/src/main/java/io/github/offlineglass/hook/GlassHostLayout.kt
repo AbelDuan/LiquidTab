@@ -6963,6 +6963,8 @@ internal fun syncOpticalVisibilityCompanions() {
 
 
 
+    private var geometryReports = 0
+
     private fun updateHostLayoutForConfig() {
         if (targetAdapter?.ownsHostLayout == true) return
 
@@ -7019,6 +7021,17 @@ internal fun syncOpticalVisibilityCompanions() {
 
         ) {
 
+            // One bounded report per difference: a wrong bar width on a fold or a
+            // parallel window is otherwise only visible as a screenshot.
+            if (geometryReports < 12) {
+                geometryReports++
+                android.util.Log.i("OfflineGlass", "[BarGeometry] " + context.packageName +
+                    " from=" + params.width + " to=" + desiredWidth +
+                    " content=" + content.width +
+                    " display=" + resources.displayMetrics.widthPixels +
+                    " slots=" + layoutSlots + " bar=" + (adapterBarLayout() != null) +
+                    " base=" + baseWidth + " compact=" + symmetricFloatingLayout)
+            }
             params.width = desiredWidth
 
             params.height = desiredHeight

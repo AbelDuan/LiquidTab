@@ -46,16 +46,32 @@ private const val FILE_MANAGER_BOTTOM_NAV_ID = "bottom_navigation_container"
  * its bottom margin.
  */
 
+/**
+ * Width the bar may occupy. Split screen, parallel windows and the fold's inner
+ * display keep a content view that is narrower than displayMetrics, so the two
+ * must be intersected: taking the larger one stretches the bar past the app's
+ * own window (the reported parallel-window overwidth).
+ */
+internal fun glassContentWidthPx(view: View): Int {
+    val display = view.resources.displayMetrics.widthPixels
+    val content = view.width.takeIf { it > 0 } ?: return display
+    return min(content, display)
+}
+
 /** Keeps the glass edge on the same screen-relative line as Coolapk's native bar. */
 internal fun globalGlassBottomGapPx(view: View): Int {
     val rootHeight = view.rootView.height.takeIf { it > 0 }
     val displayHeight = view.resources.displayMetrics.heightPixels
+    // The root may still carry the previous orientation's size right after a
+    // fold or rotation; the gap follows the smaller of the two for the same
+    // reason the width does.
+    val rootHeight2 = rootHeight?.let { min(it, displayHeight) }
     // Bilibili swaps its root between inset and edge-to-edge page containers at
     // runtime.  The shorter transient root used to shrink the floating gap until
     // the process was restarted.  Keep this app on the stable physical-window
     // reference; the other adapters retain their established parent behaviour.
     val screenHeight = TargetAdapterRegistry.forPackage(view.context.packageName)
-        ?.screenReferenceHeight(rootHeight, displayHeight) ?: (rootHeight ?: displayHeight)
+        ?.screenReferenceHeight(rootHeight2, displayHeight) ?: (rootHeight2 ?: displayHeight)
     return (screenHeight * COOLAPK_REFERENCE_BOTTOM_GAP_PX /
         COOLAPK_REFERENCE_SCREEN_HEIGHT_PX).roundToInt().coerceAtLeast(1)
 }
@@ -72,8 +88,7 @@ internal fun glassHostWidthPx(view: View, slots: Int, config: GlassConfig, densi
     // Five-item bars need the same breathing room on the left and right as the
     // approved bar has below it. Besides looking symmetric, this keeps the
     // damped, enlarged indicator away from the physical screen clip.
-    val screenWidth = view.rootView.width.takeIf { it > 0 }
-        ?: view.resources.displayMetrics.widthPixels
+    val screenWidth = glassContentWidthPx(view)
     val sideGap = globalGlassBottomGapPx(view)
     val symmetricAvailableWidth = (screenWidth - sideGap * 2)
         .coerceAtLeast((128f * density).toInt())
@@ -143,9 +158,7 @@ internal fun symmetricGlassHostWidthPx(
         // generic compact-width calculation can overwrite it.
         return glassHostWidthPx(view, referenceSlots, config, density)
     }
-    val screenWidth = view.width.coerceAtLeast(
-        view.resources.displayMetrics.widthPixels,
-    )
+    val screenWidth = glassContentWidthPx(view)
     val fullWidth = (screenWidth - 2 * symmetricGlassSideMarginPx(view, density))
         .coerceAtLeast((4 * config.tabWidth * density).toInt())
     fun tabRowWidth(count: Int): Int {
