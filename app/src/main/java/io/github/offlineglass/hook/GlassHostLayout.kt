@@ -2458,6 +2458,11 @@ internal val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat(
 
 
     override fun onAttachedToWindow() {
+        (parent as? ViewGroup)?.let { group ->
+            contentSize = group.width * 31 + group.height
+            group.removeOnLayoutChangeListener(contentSizeListener)
+            group.addOnLayoutChangeListener(contentSizeListener)
+        }
 
         if (context.packageName == MI_THEME_PACKAGE ||
 
@@ -2857,6 +2862,7 @@ internal val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat(
     }
 
     override fun onDetachedFromWindow() {
+        (parent as? ViewGroup)?.removeOnLayoutChangeListener(contentSizeListener)
         directSelectionSlide = false
         opticalSettleGate.reset()
         exactGeometryWork?.clear()
@@ -6964,6 +6970,18 @@ internal fun syncOpticalVisibilityCompanions() {
 
 
     private var geometryReports = 0
+
+    /** The bar follows the host window's own size, not the display's: a cold start on the
+     *  fold's inner display or in a parallel window lays the content out narrower than
+     *  displayMetrics after the host was created, and nothing re-ran the geometry. */
+    private var contentSize = 0
+    private val contentSizeListener = View.OnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+        val group = view as? ViewGroup ?: return@OnLayoutChangeListener
+        val size = group.width * 31 + group.height
+        if (size == contentSize) return@OnLayoutChangeListener
+        contentSize = size
+        updateHostLayoutForConfig()
+    }
 
     private fun updateHostLayoutForConfig() {
         if (targetAdapter?.ownsHostLayout == true) return

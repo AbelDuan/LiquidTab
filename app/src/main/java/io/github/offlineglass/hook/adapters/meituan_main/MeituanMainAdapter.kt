@@ -71,6 +71,9 @@ internal object MeituanMainAdapter : TargetAdapter {
         else -> 1_000L
     }
     override fun createNativeChromeController(): AppNativeChromeController = MeituanMainNativeChrome()
+    // Meituan reloads its home host on a fold switch and on parallel-window entry;
+    // the bar must re-derive its width from the new content size.
+    override val refreshHostGeometryOnRebind = true
     override fun acceptsNavigationSource(navigation: ViewGroup): Boolean =
         MeituanMainNativeTabs.isNavigationRow(navigation)
     override fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? =
