@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 18:12:54 +0800
-Subject: [PATCH 23/28] fix(theme): let a force-dark-disabled app keep its own
+Subject: [PATCH 23/31] fix(theme): let a force-dark-disabled app keep its own
  light palette
 
 Weibo's chrome stayed dark on a white page: isDarkGlass() fell through to

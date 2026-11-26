@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 12:14:15 +0800
-Subject: [PATCH 22/28] chore(fork): refresh patch series
+Subject: [PATCH 22/31] chore(fork): refresh patch series
 
 ---
  fork/PATCHES.md                               |    3 +
