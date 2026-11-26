@@ -77,3 +77,34 @@ grep -E "MeituanBinding|installed com.sankuai" "$F" | tail
 - 美团 tab 名称与数量由服务端下发，可能继续变化；槽数现在跟随原生，角色名称表仍需覆盖新名字
   （当前：首页/推荐、视频、小团、购物车、我的）。
 - `a1` 的 `getTitle` 返回值若改成 `CharSequence`，`MeituanMainTabContract.matches` 会判失败并退回原生栏。
+
+## 折叠屏 / 平行视界的栏宽（2026-11-26 第二次修）
+
+症状：内屏竖屏底栏超宽；内屏横屏平行视界底栏更严重（从左半屏延伸到窗口外）。
+「先开外屏再展开」正常，**直接在内屏冷启动**必现。
+
+根因两条，都是「栏宽用了窗口之外的尺寸」：
+
+1. `symmetricGlassHostWidthPx` 取的是 `content.width.coerceAtLeast(displayMetrics.widthPixels)`，
+   即「内容宽」和「显示宽」里**较大**的那个。内屏竖屏时 content 1672、displayMetrics 2384 级别，
+   平行视界时 content 1179、displayMetrics 1712 —— 栏就按大值布局，越过窗口边界。
+2. 冷启动时 host 在 content 完成布局**之前**就装了，装完没有谁再按新的 content 尺寸重算几何；
+   展开/旋转会重绑，所以那条路径反而正常。
+
+修复：
+
+- `GlassInstaller` 新增 `glassContentWidthPx(view)`：取 `content.width` 与 `displayMetrics.widthPixels`
+  的**交集**（content 未布局时才回退到 display），宽度与底部间距都走它；
+- `GlassHostLayout` 监听 content 父容器的 layout 变化，尺寸真的变了就重跑 `updateHostLayoutForConfig`；
+- 美团 adapter 打开 `refreshHostGeometryOnRebind`；
+- 新增 `[BarGeometry]` 日志（每个 host 最多 12 条），打印 from/to/content/display/slots/是否 detached，
+  下次再超宽可以直接从日志读输入值。
+
+实测（内屏，density 350）：
+
+| 场景 | content | host 宽 | 结论 |
+| --- | --- | --- | --- |
+| 内屏横屏 + 平行视界（左半屏） | 1179×1672 | 1095（x=42） | 窗口内居中 |
+| 内屏竖屏 | 1672×2364 | 1560（x=56） | 窗口内居中 |
+| `wm size` 改到 1712 宽后 | 1712×1168 | 1654（x=29） | 尺寸变化后自动重算 |
+| 内屏横屏（修复前） | 1179×1672 | **1712（x=-266）** | 越界 533px |
