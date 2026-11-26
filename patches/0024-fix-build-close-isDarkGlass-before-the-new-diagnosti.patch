@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 18:17:26 +0800
+Subject: [PATCH 24/25] fix(build): close isDarkGlass before the new diagnostic
+ helper
+
+---
+ .../main/java/io/github/offlineglass/hook/GlassHostLayout.kt  | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+index 225b109..90cc560 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+@@ -13656,10 +13656,6 @@ internal fun isDarkGlass(): Boolean {
+         return dark
+     }
+ 
+-    }
+-
+-
+-
+     /**
+ 
+      * One dark switch drives Weibo's glass fill, icon set and label colors �?

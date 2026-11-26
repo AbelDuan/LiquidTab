@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 12:13:43 +0800
-Subject: [PATCH 21/21] docs(meituan): record fold and parallel-window bar
+Subject: [PATCH 21/25] docs(meituan): record fold and parallel-window bar
  width fix
 
 ---

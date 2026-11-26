@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 18:25:26 +0800
+Subject: [PATCH 25/25] chore(diag): route the dark-mode report through
+ XposedBridge log
+
+---
+ .../java/io/github/offlineglass/hook/GlassHostLayout.kt    | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+index 90cc560..4cfb9fe 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+@@ -13643,15 +13643,16 @@ internal fun isDarkGlass(): Boolean {
+     private var darkReports = 0
+ 
+     private fun reportDarkMode(dark: Boolean, source: String): Boolean {
+-        if (darkReports < 8) {
++        if (darkReports < 4) {
+             darkReports++
+-            android.util.Log.i("OfflineGlass", "[DarkMode] " + context.packageName +
++            XposedBridge.log("[OfflineGlass][DarkMode] " + context.packageName +
+                 " dark=" + dark + " via=" + source + " theme=" + config.themeMode +
+                 " contentDark=" + detectedContentDark +
+                 " appNight=" + (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+                     Configuration.UI_MODE_NIGHT_YES) +
+                 " sysNight=" + (android.content.res.Resources.getSystem().configuration.uiMode and
+-                    Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES))
++                    Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES) +
++                " forceDarkDisabled=" + (targetAdapter?.disablePlatformForceDark == true))
+         }
+         return dark
+     }

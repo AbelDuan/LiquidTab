@@ -19,6 +19,13 @@
 | `4d5a934` `fix(geometry): keep the glass bar inside the app's own window` | 栏宽取 content 与 displayMetrics 的交集（原来取较大者），折叠内屏与平行视界不再超宽。 |
 | `584a058` `fix(geometry): re-derive the bar when the host window resizes` | host 监听 content 布局变化并重算几何；美团打开 `refreshHostGeometryOnRebind`。冷启动内屏不再保留错误宽度。 |
 
+## 微博
+
+| 提交 | 说明 |
+| --- | --- |
+| `ac4928b` `fix(theme): let a force-dark-disabled app keep its own light palette` | 声明 `disablePlatformForceDark` 的应用（微博）改为以自身 Configuration 判定深浅，系统 auto/全局 dark_mode 不再把浅色页面配成深色玻璃；不写死浅色，微博切深色仍变深。 |
+| `34478e4` | 判定诊断改走 XposedBridge 日志（每 host ≤4 条）。 |
+
 ## CI / 仓库
 
 | 提交 | 说明 |
