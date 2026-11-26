@@ -13646,6 +13646,12 @@ internal fun surfaceContainerColor(dark: Boolean): Int {
 
 internal fun isDarkGlass(): Boolean {
 
+        // Adapters that draw their own navigation (Weibo) do not run the pre-draw
+        // probe path, so resolve the page's own theme here once instead of falling
+        // through to the system switch with an unresolved null.
+        if (config.themeMode == GlassConfig.THEME_SYSTEM && detectedContentDark == null) {
+            updateDetectedContentTheme()
+        }
         val forced = appNavigationState?.forceDarkMode(selectedIndex)
         if (forced != null) return reportDarkMode(forced, "state")
         if (targetAdapter?.forceLightMode == true || context.packageName == MEITUAN_TAKEOUT_PACKAGE) {
@@ -13680,6 +13686,8 @@ internal fun isDarkGlass(): Boolean {
 
     /** Bounded diagnostic: a bar that is darker than its page is otherwise only a screenshot. */
     private var darkReports = 0
+    private var sampledSurfaces = 0
+    private var sampledLabels = 0
 
     private fun reportDarkMode(dark: Boolean, source: String): Boolean {
         if (darkReports < 4) {
@@ -13691,7 +13699,9 @@ internal fun isDarkGlass(): Boolean {
                     Configuration.UI_MODE_NIGHT_YES) +
                 " sysNight=" + (android.content.res.Resources.getSystem().configuration.uiMode and
                     Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES) +
-                " forceDarkDisabled=" + (targetAdapter?.disablePlatformForceDark == true))
+                " forceDarkDisabled=" + (targetAdapter?.disablePlatformForceDark == true) +
+                " surfaces=" + sampledSurfaces + " labels=" + sampledLabels +
+                " source=" + (navigationSource != null))
         }
         return dark
     }
