@@ -11210,36 +11210,6 @@ internal fun drawOuterGlass(canvas: Canvas) {
                 }
             }
 
-            context.sendBroadcast(
-
-                android.content.Intent(
-
-                    io.github.offlineglass.config.ConfigContract.ACTION_CONFIG_REQUEST,
-
-                )
-
-                    .setComponent(
-
-                        android.content.ComponentName(
-
-                            MODULE_PACKAGE,
-
-                            "$MODULE_PACKAGE.config.ConfigRequestReceiver",
-
-                        ),
-
-                    )
-
-                    .putExtra(
-
-                        io.github.offlineglass.config.ConfigContract.EXTRA_REQUEST_PACKAGE,
-
-                        context.packageName,
-
-                    ),
-
-            )
-
         }.onFailure {
 
             XposedBridge.log("[OfflineGlass][ConfigSync] register/request failed: $it")

@@ -63,7 +63,6 @@ object HookConfigReader {
      * so back off after a provider failure and serve the last fallback value
      * from memory until the backoff window expires.
      */
-    @Volatile private var providerFailedAt = 0L
     @Volatile private var fallbackCache: Cached? = null
 
     /**
@@ -83,11 +82,8 @@ object HookConfigReader {
 
     fun readStartupConfig(context: Context, packageName: String): GlassConfig? {
         startupSnapshot(packageName)?.let { return it }
-        val now = System.currentTimeMillis()
-        if (now - providerFailedAt >= PROVIDER_FAILURE_BACKOFF_MS) {
-            if (readThroughProvider(context, packageName) != null) return startupSnapshot(packageName)
-            providerFailedAt = now
-        }
+        // Startup reads the exported preferences only: the provider probe here used
+        // to launch the manager once per target-process start.
         // The module now exports this exact preferences file through LSPosed.
         // All targets must be able to use it, not only adapters with a former opt-in.
         readThroughLsposed(packageName, commitStartup = true)
@@ -152,83 +148,43 @@ object HookConfigReader {
         val callbacks = synchronized(this) { syncCallbacks.remove(packageName)?.toList().orEmpty() }
         callbacks.forEach { it(pushedConfig(packageName)) }
     }
-    /** Explicit ordered request: recover a missed push without toggling UI settings. */
+    /**
+     * Configuration travels one way: the manager pushes a bundle to every running
+     * target (LocalSettings.publishConfig), and a target reads the exported
+     * preferences when its process starts.
+     *
+     * Asking the manager back used to broadcast to its receiver from every hooked
+     * app, and the polling readers below call this path continuously. Each request
+     * started the manager process, which the system then froze again, so a single
+     * hooked app produced a steady stream of background wake-ups. Answer from
+     * memory instead; a manager-side change still arrives as a pushed bundle.
+     */
     @Synchronized
     fun requestConfigSync(context: Context, packageName: String,
         complete: ((GlassConfig?) -> Unit)? = null) {
         if (AppCatalog.forPackage(packageName) == null) return
-        val now = android.os.SystemClock.uptimeMillis()
-        val previous = lastSyncRequest[packageName]
-        if (previous != null && now - previous < 5_000L) {
-            if (complete != null) {
-                val pending = syncCallbacks[packageName]
-                if (pending != null) pending.add(complete)
-                else mainHandler.post { complete(pushedConfig(packageName)) }
-            }
-            return
-        }
-        lastSyncRequest[packageName] = now
-        // Drop callbacks of a timed-out request; bound retained closures.
-        syncCallbacks[packageName] = mutableListOf<(GlassConfig?) -> Unit>().apply {
-            if (complete != null) add(complete)
-        }
-        val app = context.applicationContext ?: context
-        runCatching {
-            app.sendOrderedBroadcast(android.content.Intent(ConfigContract.ACTION_CONFIG_REQUEST)
-                .setComponent(android.content.ComponentName(MODULE_PACKAGE,
-                    "$MODULE_PACKAGE.config.ConfigRequestReceiver"))
-                .addFlags(android.content.Intent.FLAG_RECEIVER_FOREGROUND or
-                    android.content.Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                .putExtra(ConfigContract.EXTRA_REQUEST_PACKAGE, packageName), null,
-                object : android.content.BroadcastReceiver() {
-                    override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
-                        val reply = getResultExtras(false)
-                        if (reply == null || resultCode != android.app.Activity.RESULT_OK ||
-                            reply.getString(ConfigContract.KEY_PACKAGE) != packageName) {
-                            deliverSync(packageName)
-                            return
-                        }
-                        acceptPushedConfig(packageName, GlassConfig.fromBundle(reply),
-                            revision = reply.getLong(ConfigContract.KEY_REVISION, -1L))
-                        deliverSync(packageName)
-                        android.util.Log.i("LiquidTabConfig", "sync reply pkg=$packageName revision=" +
-                            reply.getLong(ConfigContract.KEY_REVISION, -1L))
-                    }
-                }, mainHandler, android.app.Activity.RESULT_CANCELED, null, null)
-        }.onFailure { android.util.Log.w("LiquidTabConfig", "sync request failed pkg=$packageName", it) }
+        val snapshot = pushedConfig(packageName)
+        val pending = synchronized(this) { syncCallbacks.remove(packageName)?.toList().orEmpty() }
+        for (callback in pending) runCatching { callback(snapshot) }
+        if (complete != null) runCatching { complete(snapshot) }
     }
 
     /**
-     * Reads current config — prefers the module's exported SettingsProvider
-     * and falls back to XSharedPreferences.
+     * Reads the current config from the memory push cache first, then from the
+     * preferences the manager exports through xposedsharedprefs.
      *
-     * LocalSettings exports the writer through xposedsharedprefs and imports
-     * existing CE/DE settings by revision. Validated framework reads can decide
-     * startup when target-package visibility or background policy blocks IPC.
+     * Nothing here contacts the manager process: every such call started it and
+     * counted as a background wake-up on the system's app-policy page.
      */
     private fun readCurrent(context: Context, packageName: String): GlassConfig {
-        // Always give authoritative IPC a chance to advance the revision.
-        // Only the disk/default fallback is subordinate to a committed push.
         val polled = readUnpushedCurrent(context, packageName)
         return pushedConfig(packageName) ?: polled
     }
 
     private fun readUnpushedCurrent(context: Context, packageName: String): GlassConfig {
         val now = System.currentTimeMillis()
-        if (AppCatalog.forPackage(packageName) != null &&
-            now - providerFailedAt >= PROVIDER_FAILURE_BACKOFF_MS
-        ) {
-            val viaProvider = readThroughProvider(context, packageName)
-            if (viaProvider != null) {
-                providerFailedAt = 0L
-                return viaProvider
-            }
-            providerFailedAt = now
-            XposedBridge.log(
-                "[OfflineGlass][CfgDiag] provider unavailable for $packageName, " +
-                    "falling back to XSharedPreferences",
-            )
-        }
+        // No provider probe here. A resolver call to the manager's provider starts
+        // that process, and this path runs on every poll of every hooked app.
         fallbackCache?.takeIf {
             it.packageName == packageName && now - it.time < PROVIDER_FAILURE_BACKOFF_MS
         }?.let { return it.config }
@@ -241,40 +197,6 @@ object HookConfigReader {
         fallbackCache = Cached(packageName, value, now)
         return value
     }
-
-    private fun readThroughProvider(context: Context, packageName: String): GlassConfig? =
-        runCatching {
-            val bundle = context.contentResolver.call(
-                ConfigContract.URI,
-                ConfigContract.METHOD_GET,
-                packageName,
-                null,
-            )
-            if (bundle == null) {
-                XposedBridge.log("[OfflineGlass][CfgDiag] provider call returned null bundle")
-                return@runCatching null
-            }
-            if (bundle.getString(ConfigContract.KEY_PACKAGE) != packageName) {
-                XposedBridge.log(
-                    "[OfflineGlass][CfgDiag] provider package mismatch: " +
-                        bundle.getString(ConfigContract.KEY_PACKAGE),
-                )
-                return@runCatching null
-            }
-            if (!bundle.containsKey(ConfigContract.KEY_REVISION)) return@runCatching null
-            val parsed = GlassConfig.fromBundle(bundle)
-            acceptPushedConfig(packageName, parsed,
-                revision = bundle.getLong(ConfigContract.KEY_REVISION, -1L))
-            android.util.Log.i("LiquidTabStartup", "SOURCE provider pkg=$packageName revision=" +
-                bundle.getLong(ConfigContract.KEY_REVISION, -1L))
-            XposedBridge.log(
-                "[OfflineGlass][CfgDiag] provider read for $packageName: " +
-                    "blur=${parsed.blurRadius} enabled=${parsed.enabled}",
-            )
-            parsed
-        }.onFailure {
-            XposedBridge.log("[OfflineGlass][CfgDiag] provider call threw: $it")
-        }.getOrNull()
 
     fun reportActive(context: Context, packageName: String) {
         // Deliberately no cross-package provider wake-up on HyperOS. Settings are
