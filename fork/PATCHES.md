@@ -10,6 +10,12 @@
 | `5b76f2e` `fix(xhs): discover native search capsule in tab band` | 9.55 的放大镜是 `TextView` 的 compound drawable，不是独立图标；改为扫描顶栏带内、标签右侧、带背景的文字胶囊。 |
 | `f8be902` `feat(xhs): support PadHomeTabLayout` | 内屏走 `PadHomeTabLayout`，与 `HomeTabLayout` 是兄弟类；补 hook，否则内屏完全退回原生头部。 |
 
+## 美团
+
+| 提交 | 说明 |
+| --- | --- |
+| `d5004ea` `fix(meituan): follow the native slot count` | 12.69.402 撤掉视频 tab、底栏多包一层 `PTLinearLayout`，行内只剩 4 个槽；不再写死 5，选中/点击/静态切片全部改按 slot 序号，并新增 `navigationHiddenMask` 钩子避免「视频位」误伤真实 tab。 |
+
 ## CI / 仓库
 
 | 提交 | 说明 |
