@@ -13593,7 +13593,46 @@ internal fun surfaceContainerColor(dark: Boolean): Int {
 
         }
 
-        if (luminances.isNotEmpty()) {
+        // Labels are only one signal. A bar the module redraws itself hides its own
+        // labels, so an adapter that reports no text (Weibo) never resolved, and the
+        // decision fell through to the system-wide night switch. An opaque colour
+        // drawn behind the row is the surface the glass sits on, so it decides first.
+        val surfaces = ArrayList<Float>(4)
+
+        var surfaceView: View? = source
+
+        var surfaceDepth = 0
+
+        while (surfaceView != null && surfaceDepth < 4) {
+
+            val background = surfaceView.background
+
+            val painted = when (background) {
+                is android.graphics.drawable.ColorDrawable -> background.color
+                else -> null
+            }
+
+            if (painted != null && Color.alpha(painted) >= 200) {
+
+                surfaces += 0.2126f * Color.red(painted) +
+                    0.7152f * Color.green(painted) +
+                    0.0722f * Color.blue(painted)
+
+            }
+
+            surfaceView = surfaceView.parent as? View
+
+            surfaceDepth++
+
+        }
+
+        if (surfaces.isNotEmpty()) {
+
+            surfaces.sort()
+
+            detectedContentDark = surfaces[surfaces.size / 2] < DARK_SURFACE_LUMINANCE
+
+        } else if (luminances.isNotEmpty()) {
 
             luminances.sort()
 
@@ -14358,6 +14397,9 @@ internal fun isDarkGlass(): Boolean {
         const val NAVIGATION_SNAPSHOT_STABLE_FRAMES = 3
 
         const val DARK_LABEL_LUMINANCE = 145f
+
+        /** An opaque surface darker than this reads as a dark-mode page. */
+        const val DARK_SURFACE_LUMINANCE = 96f
 
         // QQ's drawer/page layers animate independently while remaining
 
