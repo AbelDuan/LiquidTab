@@ -13643,15 +13643,16 @@ internal fun isDarkGlass(): Boolean {
     private var darkReports = 0
 
     private fun reportDarkMode(dark: Boolean, source: String): Boolean {
-        if (darkReports < 8) {
+        if (darkReports < 4) {
             darkReports++
-            android.util.Log.i("OfflineGlass", "[DarkMode] " + context.packageName +
+            XposedBridge.log("[OfflineGlass][DarkMode] " + context.packageName +
                 " dark=" + dark + " via=" + source + " theme=" + config.themeMode +
                 " contentDark=" + detectedContentDark +
                 " appNight=" + (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
                     Configuration.UI_MODE_NIGHT_YES) +
                 " sysNight=" + (android.content.res.Resources.getSystem().configuration.uiMode and
-                    Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES))
+                    Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES) +
+                " forceDarkDisabled=" + (targetAdapter?.disablePlatformForceDark == true))
         }
         return dark
     }
