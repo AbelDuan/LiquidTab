@@ -1,0 +1,1706 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 19:54:30 +0800
+Subject: [PATCH 13/17] chore(fork): export patch series for custom-v2.1.2.1
+
+---
+ ...ustom-branch-CI-build-and-upstream-s.patch | 423 ++++++++++++++++++
+ ...ive-search-hint-layer-beside-the-gla.patch | 257 +++++++++++
+ ...d-secrets-context-in-step-conditions.patch |  55 +++
+ ...-upstream-releases-and-document-CI-s.patch |  96 ++++
+ ...stalled-sdkmanager-and-platform-37.0.patch |  38 ++
+ ...ormalize-CRLF-gradlew-before-running.patch |  26 ++
+ ...record-verified-matrix-and-patch-log.patch |  46 ++
+ ...fixes-and-structural-search-layer-re.patch | 117 +++++
+ ...er-native-search-capsule-in-tab-band.patch | 286 ++++++++++++
+ ...VitalRelease-docs-xhs-record-header-.patch | 115 +++++
+ ...-PadHomeTabLayout-header-on-fold-inn.patch |  56 +++
+ ...ed-results-for-xhs-9.55-and-pad-layo.patch |  87 ++++
+ 12 files changed, 1602 insertions(+)
+ create mode 100644 patches/0001-chore-fork-add-custom-branch-CI-build-and-upstream-s.patch
+ create mode 100644 patches/0002-fix-xhs-hide-native-search-hint-layer-beside-the-gla.patch
+ create mode 100644 patches/0003-fix-ci-avoid-secrets-context-in-step-conditions.patch
+ create mode 100644 patches/0004-chore-fork-watch-upstream-releases-and-document-CI-s.patch
+ create mode 100644 patches/0005-fix-ci-use-preinstalled-sdkmanager-and-platform-37.0.patch
+ create mode 100644 patches/0006-fix-ci-normalize-CRLF-gradlew-before-running.patch
+ create mode 100644 patches/0007-docs-fork-record-verified-matrix-and-patch-log.patch
+ create mode 100644 patches/0008-fix-xhs-compile-fixes-and-structural-search-layer-re.patch
+ create mode 100644 patches/0009-fix-xhs-discover-native-search-capsule-in-tab-band.patch
+ create mode 100644 patches/0010-fix-ci-skip-lintVitalRelease-docs-xhs-record-header-.patch
+ create mode 100644 patches/0011-feat-xhs-support-PadHomeTabLayout-header-on-fold-inn.patch
+ create mode 100644 patches/0012-docs-fork-verified-results-for-xhs-9.55-and-pad-layo.patch
+
+diff --git a/patches/0001-chore-fork-add-custom-branch-CI-build-and-upstream-s.patch b/patches/0001-chore-fork-add-custom-branch-CI-build-and-upstream-s.patch
+new file mode 100644
+index 0000000..0a11297
+--- /dev/null
++++ b/patches/0001-chore-fork-add-custom-branch-CI-build-and-upstream-s.patch
+@@ -0,0 +1,423 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:01:20 +0800
++Subject: [PATCH 01/12] chore(fork): add custom branch, CI build and upstream
++ sync workflow
++
++---
++ .github/workflows/build-apk.yml | 109 ++++++++++++++++++++++++++++++++
++ fork/ADAPTING.md                |  93 +++++++++++++++++++++++++++
++ fork/PATCHES.md                 |  13 ++++
++ fork/README.md                  |  79 +++++++++++++++++++++++
++ fork/upstream-base              |   1 +
++ tools/export-patches.sh         |  10 +++
++ tools/sync-upstream.sh          |  53 ++++++++++++++++
++ 7 files changed, 358 insertions(+)
++ create mode 100644 .github/workflows/build-apk.yml
++ create mode 100644 fork/ADAPTING.md
++ create mode 100644 fork/PATCHES.md
++ create mode 100644 fork/README.md
++ create mode 100644 fork/upstream-base
++ create mode 100755 tools/export-patches.sh
++ create mode 100755 tools/sync-upstream.sh
++
++diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
++new file mode 100644
++index 0000000..b90826e
++--- /dev/null
+++++ b/.github/workflows/build-apk.yml
++@@ -0,0 +1,109 @@
+++name: build-apk
+++
+++# 只在自定义生产分支和自定义发布标签上跑，避免上游同步提交触发重复构建。
+++on:
+++  push:
+++    branches: [custom]
+++    tags: ['custom-v*']
+++  workflow_dispatch:
+++
+++permissions:
+++  contents: write
+++
+++concurrency:
+++  group: build-${{ github.ref }}
+++  cancel-in-progress: true
+++
+++jobs:
+++  build:
+++    runs-on: ubuntu-latest
+++    timeout-minutes: 45
+++    steps:
+++      - uses: actions/checkout@v4
+++
+++      - name: Set up JDK 21
+++        uses: actions/setup-java@v4
+++        with:
+++          distribution: temurin
+++          java-version: '21'
+++
+++      - name: Set up Android SDK
+++        uses: android-actions/setup-android@v3
+++
+++      - name: Install platform 37 and build tools
+++        run: |
+++          yes | sdkmanager --licenses >/dev/null || true
+++          sdkmanager --channel=3 "platforms;android-37" "build-tools;37.0.0"
+++
+++      - name: Set up Gradle
+++        uses: gradle/actions/setup-gradle@v4
+++
+++      - name: Read version
+++        id: version
+++        run: |
+++          NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -1)
+++          CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -1)
+++          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+++          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+++
+++      - name: Assemble release
+++        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+++
+++      - name: Sign APK
+++        if: ${{ secrets.KEYSTORE_B64 != '' }}
+++        env:
+++          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+++          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+++          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+++          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+++          VERSION_NAME: ${{ steps.version.outputs.name }}
+++          VERSION_CODE: ${{ steps.version.outputs.code }}
+++        run: |
+++          set -euo pipefail
+++          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/liquidtab.keystore"
+++          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+++          APKSIGNER="$ANDROID_HOME/build-tools/$BT/apksigner"
+++          SRC=$(find app/build/outputs/apk/release -name '*-unsigned.apk' | head -1)
+++          test -n "$SRC"
+++          OUT="LiquidTab-${VERSION_NAME}-${VERSION_CODE}-custom.apk"
+++          "$APKSIGNER" sign \
+++            --ks "$RUNNER_TEMP/liquidtab.keystore" \
+++            --ks-key-alias "$KEY_ALIAS" \
+++            --ks-pass env:KEYSTORE_PASSWORD \
+++            --key-pass env:KEY_PASSWORD \
+++            --out "$OUT" "$SRC"
+++          "$APKSIGNER" verify --print-certs "$OUT"
+++          sha256sum "$OUT" > "$OUT.sha256"
+++          cat "$OUT.sha256"
+++
+++      - name: Fallback unsigned APK
+++        if: ${{ secrets.KEYSTORE_B64 == '' }}
+++        run: |
+++          set -euo pipefail
+++          SRC=$(find app/build/outputs/apk/release -name '*-unsigned.apk' | head -1)
+++          test -n "$SRC"
+++          cp "$SRC" "LiquidTab-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}-unsigned.apk"
+++          sha256sum LiquidTab-*.apk > SHA256SUMS.txt
+++          cat SHA256SUMS.txt
+++
+++      - name: Upload workflow artifact
+++        uses: actions/upload-artifact@v4
+++        with:
+++          name: LiquidTab-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
+++          path: |
+++            LiquidTab-*.apk
+++            LiquidTab-*.apk.sha256
+++            SHA256SUMS.txt
+++          if-no-files-found: error
+++
+++      - name: Publish GitHub release
+++        if: startsWith(github.ref, 'refs/tags/custom-v')
+++        uses: softprops/action-gh-release@v2
+++        with:
+++          files: |
+++            LiquidTab-*.apk
+++            LiquidTab-*.apk.sha256
+++          generate_release_notes: true
+++          body: |
+++            基于上游 tag `${{ github.event.repository.description }}` 的自定义构建。
+++            安装前请确认设备允许跨签名覆盖安装，或先备份数据。
++diff --git a/fork/ADAPTING.md b/fork/ADAPTING.md
++new file mode 100644
++index 0000000..cc56eaf
++--- /dev/null
+++++ b/fork/ADAPTING.md
++@@ -0,0 +1,93 @@
+++# 新应用版本适配手册
+++
+++目标：应用改版、上游 LiquidTab 还没更新时，我们能在本 fork 里独立适配，并且下次上游更新时补丁仍然容易搬。
+++
+++## 0. 先判断问题属于哪一层
+++
+++| 现象 | 优先看 |
+++| --- | --- |
+++| 整个底栏/顶栏不出现、错位 | 导航发现、Hook 信号、安装器 |
+++| 原生控件没被替换干净（多一个框、多一行字） | 对应应用的 `*TopBar` / `*Chrome` / `*Adapter` |
+++| 替换后点不动、点错页 | 点击源（`performClick` 目标）和页面状态 |
+++| 只有某个子页面异常 | 应用目录里的页面例外/视口代码 |
+++
+++先看应用目录，不要一上来改共享 `GlassHostLayout`。
+++
+++## 1. 抓现场（必须做）
+++
+++在目标页面停留，然后任选其一：
+++
+++```bash
+++# 当前 Activity + 视图树（最有用）
+++adb shell dumpsys activity top | head -200
+++
+++# 可交互元素的 resource-id / text / bounds
+++adb shell uiautomator dump /sdcard/window_dump.xml
+++adb pull /sdcard/window_dump.xml
+++
+++# 看模块自己的日志
+++adb logcat -s LiquidTabXhsTop LiquidTabDouyin OfflineGlass
+++```
+++
+++有 APK 时，直接看布局比在设备上猜更快：`resources.arsc` 里布局名可能被混淆（小红书是 `r/*.xml`），按资源 ID 的 4 字节小端在 `res/layout*.xml` 或 `r/*.xml` 里搜，再用 AXML 解码器打印层级。
+++
+++## 2. 找“结构锚点”，不要记版本号
+++
+++上游约定（必须遵守）：
+++
+++- 类名/控件层级优先，`R.id` 数值只作提示；
+++- 不写 `if (versionName == ...)`；
+++- 找不到就保留原生界面并打日志，不猜、不隐藏整页。
+++
+++小红书的例子（9.50）：
+++
+++- 顶栏容器：`FrameLayout`，内含 `HomeTabLayout`（tabs）和搜索层；
+++- 搜索图标：`ImageView`，父层是搜索条的 `ConstraintLayout`；
+++- 残留“搜索提示框”：与图标同层的 `TextView`（带 background，文字是搜索提示）；
+++- 只隐藏图标，不隐藏同层文字，就会剩下一个背景框。
+++
+++## 3. 改在正确的那一层
+++
+++- 应用专属逻辑只放在 `app/src/main/java/io/github/offlineglass/hook/adapters/<key>/`；
+++- 隐藏原生控件统一走该应用 Session 的 `hide(...)`（记录原始 alpha/visibility，退出时恢复），不要直接 `setVisibility(GONE)`；
+++- 要保留点击能力时只把 `alpha` 设为 0，不要设 `INVISIBLE`/`GONE`；
+++- 新增隐藏逻辑要能处理“控件晚到”：在现有 `onPreDraw`/`scan()` 节流里执行，不要另起无限循环。
+++
+++## 4. 本地验证
+++
+++```bash
+++./gradlew :app:assembleRelease
+++```
+++
+++装到设备后：
+++
+++1. 打开目标应用首页，确认没有多余框/字；
+++2. 点我们自己的按钮，确认走的是原生逻辑；
+++3. 切到二级页再返回，确认没有恢复一半；
+++4. 深色/浅色、折叠/展开各看一次；
+++5. `adb logcat` 里没有 `LiquidTab<App>` 的契约拒绝日志。
+++
+++编译通过不等于运行时通过，必须写清“在哪个应用版本、哪个页面”实测过。
+++
+++## 5. 提交与出包
+++
+++```bash
+++git switch custom
+++git add -A
+++git commit -m "fix(xhs): hide native search hint layer beside the glass search key"
+++git push origin custom
+++```
+++
+++CI 自动出 APK。确认没问题再打标签：
+++
+++```bash
+++git tag custom-v2.1.2.1
+++git push origin custom-v2.1.2.1
+++```
+++
+++## 6. 让补丁容易搬回上游
+++
+++- 一个应用一个提交，提交信息写 `fix(<key>): ...` / `feat(<key>): ...`；
+++- 不改上游的版本号、签名配置、README（除非必要）；
+++- 共享文件只做最小改动，并在提交说明里写“为什么必须改共享层”；
+++- 每次同步上游后跑一遍 `tools/export-patches.sh`，把补丁留在 `patches/` 里，冲突时可直接 `git apply` 对照。
++diff --git a/fork/PATCHES.md b/fork/PATCHES.md
++new file mode 100644
++index 0000000..0a1b6d7
++--- /dev/null
+++++ b/fork/PATCHES.md
++@@ -0,0 +1,13 @@
+++# 补丁清单
+++
+++基线：见 [`upstream-base`](upstream-base)。
+++
+++| 提交 | 范围 | 说明 |
+++| --- | --- | --- |
+++| `fix(xhs): hide native search hint layer` | 小红书 | 只隐藏搜索图标时，9.50 顶栏会剩一个带背景的搜索提示 `TextView`。改为按结构隐藏整个搜索层，保留图标可点。 |
+++
+++补丁原则：
+++
+++- 只动应用目录，共享层改动要单独说明；
+++- 按结构绑定，不按版本号；
+++- 失败保留原生 UI 并打日志。
++diff --git a/fork/README.md b/fork/README.md
++new file mode 100644
++index 0000000..ef88709
++--- /dev/null
+++++ b/fork/README.md
++@@ -0,0 +1,79 @@
+++# LiquidTab 自定义维护仓库
+++
+++上游：<https://github.com/big-dictator/LiquidTab>（GPL-3.0）
+++本仓库：<https://github.com/AbelDuan/LiquidTab>
+++
+++这个 fork 只做三件事：
+++
+++1. 保留上游全部历史与 tag，随时能看清上游改了什么。
+++2. `custom` 分支放我们自己的补丁（默认分支），每个补丁一个独立提交，便于回滚。
+++3. GitHub Actions 自动出未签名/已签名 APK，原仓库没适配的新版应用，我们自己改完就能装。
+++
+++## 分支约定
+++
+++| 分支/标签 | 用途 |
+++| --- | --- |
+++| `main` | 上游原样镜像，只用于 `git fetch upstream` 和对照，不直接构建 |
+++| `custom` | 生产分支：`v2.1.2` + 我们的补丁，默认分支，CI 从这里出包 |
+++| `custom-v*` | 我们自己的发布标签，推送后自动创建 GitHub Release |
+++| `v*`（上游标签） | 上游每个版本的源码快照，`fork/upstream-base` 记录当前补丁基于哪个标签 |
+++
+++`fork/upstream-base` 是当前补丁栈的基线。同步上游时脚本会读它，并把补丁逐个 cherry-pick 到新 tag 上。
+++
+++## 快速同步上游
+++
+++上游发新版本（比如 `v2.2`）后：
+++
+++```bash
+++git remote add upstream https://github.com/big-dictator/LiquidTab.git  # 只需一次
+++git fetch upstream --tags
+++tools/sync-upstream.sh v2.2
+++git push origin custom --follow-tags
+++```
+++
+++脚本会：
+++
+++1. 从 `v2.2` 建 `sync/v2.2` 分支；
+++2. 把 `v2.1.2..custom` 的补丁逐个 cherry-pick 过去；
+++3. 更新 `fork/upstream-base`；
+++4. 把 `custom` 重置到同步结果（只在成功后执行）。
+++
+++有冲突时脚本会停下，保留 `sync/v2.2` 现场。按提示解决后 `git cherry-pick --continue`，再手工把 `custom` 指过去。**不要**用 GitHub 网页的 “Sync fork” 覆盖 `custom`。
+++
+++补丁导出/重放：
+++
+++```bash
+++tools/export-patches.sh        # 导出到 patches/
+++```
+++
+++## 出包
+++
+++推送到 `custom` 或手动 `workflow_dispatch` 即构建：
+++
+++- 有 `KEYSTORE_B64` 等 secrets：直接产出已签名 APK + SHA256；
+++- 没有 secrets：产出 `-unsigned.apk`，下载后本地用 `apksigner` 签。
+++
+++发布标签：
+++
+++```bash
+++git tag custom-v2.1.2.1
+++git push origin custom-v2.1.2.1
+++```
+++
+++CI 会创建 Release 并附 APK。
+++
+++## 安装
+++
+++本机（HyperOS / KernelSU）允许跨签名覆盖安装，可直接盖官方包并保留数据；其他设备若签名不同，需要先卸载官方版（会丢模块设置）。
+++
+++## 补丁清单
+++
+++见 [`PATCHES.md`](PATCHES.md)。每个补丁都应满足：
+++
+++- 只动某个应用目录，或只动该应用会用到的共享点；
+++- 不按版本号 gate 行为，用结构/语义绑定；
+++- 失败时保留原生界面并打日志，不白屏、不吞异常。
+++
+++## 新应用版本适配
+++
+++上游没跟上某个应用改版时，看 [`ADAPTING.md`](ADAPTING.md)。
++diff --git a/fork/upstream-base b/fork/upstream-base
++new file mode 100644
++index 0000000..5969682
++--- /dev/null
+++++ b/fork/upstream-base
++@@ -0,0 +1 @@
+++v2.1.2
++diff --git a/tools/export-patches.sh b/tools/export-patches.sh
++new file mode 100755
++index 0000000..0b25849
++--- /dev/null
+++++ b/tools/export-patches.sh
++@@ -0,0 +1,10 @@
+++#!/usr/bin/env bash
+++# 把 fork/upstream-base..custom 的补丁导出成可重放的 .patch 文件。
+++set -euo pipefail
+++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+++cd "$ROOT"
+++BASE="$(tr -d '[:space:]' < fork/upstream-base)"
+++mkdir -p patches
+++rm -f patches/*.patch
+++git format-patch --no-signature --zero-commit -o patches "$BASE..custom" >/dev/null
+++ls -1 patches
++diff --git a/tools/sync-upstream.sh b/tools/sync-upstream.sh
++new file mode 100755
++index 0000000..2eadf9c
++--- /dev/null
+++++ b/tools/sync-upstream.sh
++@@ -0,0 +1,53 @@
+++#!/usr/bin/env bash
+++# 把 custom 分支上的补丁栈搬到上游新 tag 上。
+++# 用法: tools/sync-upstream.sh v2.2 [远端名，默认 upstream]
+++set -euo pipefail
+++
+++TAG="${1:?用法: tools/sync-upstream.sh <上游tag> [远端名]}"
+++REMOTE="${2:-upstream}"
+++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+++cd "$ROOT"
+++
+++BASE_FILE="fork/upstream-base"
+++[ -f "$BASE_FILE" ] || { echo "缺少 $BASE_FILE" >&2; exit 1; }
+++BASE="$(tr -d '[:space:]' < "$BASE_FILE")"
+++
+++git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || {
+++  echo "本地没有 $TAG，先执行: git fetch $REMOTE --tags" >&2; exit 1
+++}
+++git rev-parse -q --verify "refs/heads/custom" >/dev/null || { echo "缺少 custom 分支" >&2; exit 1; }
+++[ "$BASE" != "$TAG" ] || { echo "基线已经是 $TAG，无需同步" >&2; exit 1; }
+++
+++mapfile -t PATCHES < <(git rev-list --reverse "$BASE..custom")
+++if [ "${#PATCHES[@]}" -eq 0 ]; then
+++  echo "custom 相对 $BASE 没有补丁，直接重置到 $TAG"
+++  git switch -c "sync/$TAG" "$TAG"
+++else
+++  echo "基线: $BASE -> $TAG，补丁数: ${#PATCHES[@]}"
+++  git switch -c "sync/$TAG" "$TAG"
+++  for commit in "${PATCHES[@]}"; do
+++    if ! git cherry-pick "$commit"; then
+++      cat >&2 <<EOF
+++
+++cherry-pick $commit 失败，冲突现场已保留在 sync/$TAG。
+++处理步骤:
+++  1. 按冲突文件修正，保留我们补丁的意图，同时接受上游的新结构;
+++  2. git add <文件> && git cherry-pick --continue
+++  3. 全部完成后:
+++       echo $TAG > fork/upstream-base && git add fork/upstream-base
+++       git commit -m "chore: bump upstream base to $TAG"
+++       git switch custom && git reset --hard sync/$TAG
+++       git push origin custom
+++  放弃本次同步: git cherry-pick --abort && git switch custom && git branch -D sync/$TAG
+++EOF
+++      exit 1
+++    fi
+++  done
+++fi
+++
+++echo "$TAG" > "$BASE_FILE"
+++git add "$BASE_FILE"
+++git commit -m "chore: bump upstream base to $TAG"
+++git switch custom
+++git reset --hard "sync/$TAG"
+++echo "完成：custom 已指向 $TAG + 补丁栈。检查后执行 git push origin custom --follow-tags"
+diff --git a/patches/0002-fix-xhs-hide-native-search-hint-layer-beside-the-gla.patch b/patches/0002-fix-xhs-hide-native-search-hint-layer-beside-the-gla.patch
+new file mode 100644
+index 0000000..f812ebd
+--- /dev/null
++++ b/patches/0002-fix-xhs-hide-native-search-hint-layer-beside-the-gla.patch
+@@ -0,0 +1,257 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:04:42 +0800
++Subject: [PATCH 02/12] fix(xhs): hide native search hint layer beside the
++ glass search key
++
++---
++ .../hook/adapters/xhs/XhsSearchChrome.kt      | 196 ++++++++++++++++++
++ .../hook/adapters/xhs/XhsTopBar.kt            |  14 +-
++ 2 files changed, 206 insertions(+), 4 deletions(-)
++ create mode 100644 app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++
++diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++new file mode 100644
++index 0000000..5d46224
++--- /dev/null
+++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++@@ -0,0 +1,196 @@
+++package io.github.offlineglass.hook.adapters.xhs
+++
+++import android.graphics.Rect
+++import android.view.View
+++import android.view.ViewGroup
+++import android.widget.TextView
+++import io.github.offlineglass.hook.GlassHostLayout
+++import io.github.offlineglass.hook.adapters.AdapterOwnedOverlay
+++import kotlin.math.abs
+++
+++/**
+++ * Native search entry chrome that survives hiding the magnifier alone.
+++ *
+++ * 小红书 9.50 keeps the search hint pill ("搜索笔记，用户和商品") in the same thin
+++ * layer as the search icon: `ConstraintLayout(icon + hint TextView)`. The top bar
+++ * hides the icon so the native click target stays alive, which leaves the pill
+++ * and its background visible next to our glass search key.
+++ *
+++ * Binding stays structural and never reads a version:
+++ * - preferred: the icon's parent is a shallow layer that holds no tabs, menu or
+++ *   pager, is wider than the icon and is not taller than one row; hide the layer;
+++ * - fallback: layouts that put the icon directly in the page root (RedViewStub
+++ *   inflated pill) hide the right-side hint text view in the header band.
+++ *
+++ * Only alpha is touched: the icon stays attached and enabled so `performClick`
+++ * from the glass key keeps using the native route. A rejected/ambiguous layout
+++ * keeps the native chrome and reports once instead of guessing.
+++ */
+++internal class XhsSearchChrome(
+++    private val root: View,
+++    private val tabs: ViewGroup,
+++    private val menu: View?,
+++    private val icon: View,
+++) {
+++    private var reported = false
+++    private val location = IntArray(2)
+++    private val iconRect = Rect()
+++    private val bounds = Rect()
+++
+++    fun suppress(hide: (View, Boolean) -> Unit) {
+++        if (!icon.isAttachedToWindow || icon.width <= 0 || icon.height <= 0) return
+++        val d = icon.resources.displayMetrics.density
+++        icon.getLocationInWindow(location)
+++        val iconX = location[0]
+++        val iconY = location[1]
+++        val iconBottom = iconY + icon.height
+++        val iconCenterY = iconY + icon.height / 2
+++        val iconRight = iconX + icon.width
+++        iconRect.set(iconX, iconY, iconRight, iconBottom)
+++
+++        // Preferred: the icon and the hint text share one dedicated layer.
+++        var layer = icon.parent as? ViewGroup
+++        var depth = 0
+++        while (layer != null && layer !== root && depth < 3) {
+++            if (isDedicatedLayer(layer, iconRight)) {
+++                hide(layer)
+++                report("layer", layer)
+++                return
+++            }
+++            layer = layer.parent as? ViewGroup
+++            depth++
+++        }
+++
+++        // Fallback: the pill lives next to the icon in the header root.
+++        val header = headerScope() ?: return
+++        val limit = maxOf((16f * d).toInt(), (icon.height * .8f).toInt())
+++        val candidates = ArrayList<TextView>(4)
+++        collect(header, candidates, 0, 300)
+++        var hidden = 0
+++        for (text in candidates) {
+++            if (!text.isShown || text.text.isNullOrBlank() || text.background == null) continue
+++            if (text.width <= 0 || text.width > root.width * .8f) continue
+++            text.getLocationInWindow(location)
+++            val top = location[1]
+++            val bottom = top + text.height
+++            val right = location[0] + text.width
+++            // Right half of the header only: the login chip and tab labels sit
+++            // left of this band and must keep their native behaviour.
+++            if (right > iconRight + (4f * d).toInt()) continue
+++            if (right < leftOfTabs() - (8f * d).toInt()) continue
+++            if (bottom < iconY - limit || top > iconBottom + limit) continue
+++            if (abs(top + text.height / 2 - iconCenterY) > limit) continue
+++            hide(text)
+++            hidden++
+++        }
+++        if (hidden > 0) report("hint", candidates.firstOrNull { text ->
+++            text.isShown && !text.text.isNullOrBlank() && text.background != null
+++        })
+++    }
+++
+++    private fun isDedicatedLayer(layer: ViewGroup, iconRight: Int): Boolean {
+++        if (contains(layer, tabs)) return false
+++        if (menu != null && contains(layer, menu)) return false
+++        if (containsPager(layer)) return false
+++        if (containsOwned(layer)) return false
+++        if (layer.width < icon.width * 2) return false
+++        if (layer.height !in 1..(icon.height * 2.6f).toInt()) return false
+++        layer.getLocationInWindow(location)
+++        bounds.set(location[0], location[1], location[0] + layer.width, location[1] + layer.height)
+++        // Stay in the header band: a page-sized layer is never a search row.
+++        if (bounds.width() > root.width * .98f && bounds.height() > icon.height * 1.8f) return false
+++        if (!Rect.intersects(bounds, iconRect)) return false
+++        // The layer must actually carry the search entry left of the icon.
+++        val text = findHintText(layer, iconRight) ?: return false
+++        return text.width > icon.width && text.background != null
+++    }
+++
+++    private fun findHintText(scope: ViewGroup, iconRight: Int): TextView? {
+++        val pending = ArrayList<View>(8)
+++        pending.add(scope)
+++        var budget = 40
+++        while (pending.isNotEmpty() && budget-- > 0) {
+++            val view = pending.removeAt(pending.size - 1)
+++            if (view === icon || view is AdapterOwnedOverlay || view is GlassHostLayout) continue
+++            if (view is TextView) {
+++                if (!view.text.isNullOrBlank() && view.isShown && view.width > 0 &&
+++                    view.background != null) {
+++                    view.getLocationInWindow(location)
+++                    if (location[0] + view.width <= iconRight + (4f * view.resources.displayMetrics.density).toInt())
+++                        return view
+++                }
+++                continue
+++            }
+++            if (view is ViewGroup) for (i in 0 until view.childCount) pending.add(view.getChildAt(i))
+++        }
+++        return null
+++    }
+++
+++    private fun headerScope(): ViewGroup? {
+++        var parent = icon.parent as? ViewGroup
+++        while (parent != null) {
+++            if (parent === root) return parent
+++            if (contains(parent, tabs)) return parent
+++            parent = parent.parent as? ViewGroup
+++        }
+++        return null
+++    }
+++
+++    private fun leftOfTabs(): Int {
+++        tabs.getLocationInWindow(location)
+++        return location[0]
+++    }
+++
+++    private fun collect(scope: ViewGroup, out: MutableList<TextView>, depth: Int, budget: Int): Int {
+++        if (budget <= 0 || depth > 8) return budget
+++        for (i in 0 until scope.childCount) {
+++            if (budget <= 0) return budget
+++            val child = scope.getChildAt(i)
+++            if (child === tabs || child === menu || child === icon) continue
+++            if (child is AdapterOwnedOverlay || child is GlassHostLayout) continue
+++            if (contains(child, tabs) || (menu != null && contains(child, menu))) continue
+++            if (child is TextView) out.add(child)
+++            else if (child is ViewGroup) budget = collect(child, out, depth + 1, budget - 1)
+++        }
+++        return budget
+++    }
+++
+++    private fun contains(ancestor: View, target: View): Boolean {
+++        var view: View? = target
+++        while (view != null) {
+++            if (view === ancestor) return true
+++            view = view.parent as? View
+++        }
+++        return false
+++    }
+++
+++    private fun containsOwned(scope: View): Boolean {
+++        if (scope is AdapterOwnedOverlay || scope is GlassHostLayout) return true
+++        if (scope is ViewGroup) for (i in 0 until scope.childCount) {
+++            if (containsOwned(scope.getChildAt(i))) return true
+++        }
+++        return false
+++    }
+++
+++    private fun containsPager(scope: View): Boolean {
+++        if (scope.javaClass.name.contains("ViewPager")) return true
+++        if (scope is ViewGroup) for (i in 0 until scope.childCount) {
+++            if (containsPager(scope.getChildAt(i))) return true
+++        }
+++        return false
+++    }
+++
+++    private fun report(kind: String, hidden: View?) {
+++        if (reported) return
+++        reported = true
+++        val layer = icon.parent as? ViewGroup
+++        val children = layer?.let { parent ->
+++            (0 until parent.childCount).joinToString(",") { index ->
+++                parent.getChildAt(index).javaClass.simpleName
+++            }
+++        }
+++        android.util.Log.i("LiquidTabXhsTop",
+++            "search chrome hidden by $kind; icon-parent=${layer?.javaClass?.name} children=[$children] " +
+++                "hidden=${hidden?.javaClass?.name}")
+++    }
+++}
++diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
++index fd325ec..f253da4 100644
++--- a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
+++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
++@@ -192,6 +192,7 @@ internal object XhsTopBar {
++         var nativeOrder = emptyList<View>()
++         var menuSource: View? = null
++         var searchSource: View? = null
+++        private var searchChrome: XhsSearchChrome? = null
++         var channelSource: View? = null
++         var channelRow: View? = null
++         private val channelSelection = XhsTopChannel()
++@@ -321,7 +322,11 @@ internal object XhsTopBar {
++                 listOf(following, explore) + nativeOrder.filter { it !== following && it !== explore }
++                 else nativeOrder
++             menuSource = XhsTopBinding.headerAction(nativeTabs, false, 0x7f0930d1)
++-            searchSource = XhsTopBinding.headerAction(nativeTabs, true, 0x7f092e7c)
+++            val foundSearch = XhsTopBinding.headerAction(nativeTabs, true, 0x7f092e7c)
+++            if (foundSearch !== searchSource) {
+++                searchSource = foundSearch
+++                searchChrome = foundSearch?.let { XhsSearchChrome(root, nativeTabs, menuSource, it) }
+++            }
++             // x8d.b0.t0() -> 0x7f0908ae; x8d.k observes this exact native click.
++             channelSource = root.findViewById(0x7f0908ae)
++             channelRow = XhsTopBinding.channelRow(root) ?: root.findViewById(0x7f09110f)
++@@ -443,6 +448,7 @@ internal object XhsTopBar {
++             topHosts[1].updateAdapterSlotCount(3, selection)
++             hide(nativeTabs); hide(menuSource); hide(searchSource)
++             headerChrome.suppress { view, decorative -> hide(view, decorative) }
+++            searchChrome?.suppress { view, decorative -> hide(view, decorative) }
++             clear(clearedChrome)
++             viewport.update(headerBottom)
++             refreshIndicator.update(root, headerBottom)
++@@ -706,6 +712,6 @@ internal object XhsTopBar {
++             }
++         }
++     }
++-}
++-
++-
+++}
+++
+++
+diff --git a/patches/0003-fix-ci-avoid-secrets-context-in-step-conditions.patch b/patches/0003-fix-ci-avoid-secrets-context-in-step-conditions.patch
+new file mode 100644
+index 0000000..654abfe
+--- /dev/null
++++ b/patches/0003-fix-ci-avoid-secrets-context-in-step-conditions.patch
+@@ -0,0 +1,55 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:06:08 +0800
++Subject: [PATCH 03/12] fix(ci): avoid secrets context in step conditions
++
++---
++ .github/workflows/build-apk.yml | 15 ++++++++-------
++ 1 file changed, 8 insertions(+), 7 deletions(-)
++
++diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
++index b90826e..131efad 100644
++--- a/.github/workflows/build-apk.yml
+++++ b/.github/workflows/build-apk.yml
++@@ -18,6 +18,11 @@ jobs:
++   build:
++     runs-on: ubuntu-latest
++     timeout-minutes: 45
+++    env:
+++      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+++      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+++      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+++      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
++     steps:
++       - uses: actions/checkout@v4
++ 
++@@ -50,12 +55,8 @@ jobs:
++         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
++ 
++       - name: Sign APK
++-        if: ${{ secrets.KEYSTORE_B64 != '' }}
+++        if: env.KEYSTORE_B64 != ''
++         env:
++-          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
++-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
++-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
++-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
++           VERSION_NAME: ${{ steps.version.outputs.name }}
++           VERSION_CODE: ${{ steps.version.outputs.code }}
++         run: |
++@@ -77,7 +78,7 @@ jobs:
++           cat "$OUT.sha256"
++ 
++       - name: Fallback unsigned APK
++-        if: ${{ secrets.KEYSTORE_B64 == '' }}
+++        if: env.KEYSTORE_B64 == ''
++         run: |
++           set -euo pipefail
++           SRC=$(find app/build/outputs/apk/release -name '*-unsigned.apk' | head -1)
++@@ -105,5 +106,5 @@ jobs:
++             LiquidTab-*.apk.sha256
++           generate_release_notes: true
++           body: |
++-            基于上游 tag `${{ github.event.repository.description }}` 的自定义构建。
+++            基于上游 LiquidTab 的自定义构建（补丁基线见 fork/upstream-base）。
++             安装前请确认设备允许跨签名覆盖安装，或先备份数据。
+diff --git a/patches/0004-chore-fork-watch-upstream-releases-and-document-CI-s.patch b/patches/0004-chore-fork-watch-upstream-releases-and-document-CI-s.patch
+new file mode 100644
+index 0000000..0ec9ccb
+--- /dev/null
++++ b/patches/0004-chore-fork-watch-upstream-releases-and-document-CI-s.patch
+@@ -0,0 +1,96 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:06:49 +0800
++Subject: [PATCH 04/12] chore(fork): watch upstream releases and document CI
++ setup
++
++---
++ .github/workflows/watch-upstream.yml | 61 ++++++++++++++++++++++++++++
++ fork/README.md                       |  6 +++
++ 2 files changed, 67 insertions(+)
++ create mode 100644 .github/workflows/watch-upstream.yml
++
++diff --git a/.github/workflows/watch-upstream.yml b/.github/workflows/watch-upstream.yml
++new file mode 100644
++index 0000000..7e0fba0
++--- /dev/null
+++++ b/.github/workflows/watch-upstream.yml
++@@ -0,0 +1,61 @@
+++name: watch-upstream
+++
+++# 每天检查上游是否发了新版本；有就开一个 issue 提醒同步。
+++on:
+++  schedule:
+++    - cron: '0 20 * * *'   # 04:00 Asia/Shanghai
+++  workflow_dispatch:
+++
+++permissions:
+++  contents: read
+++  issues: write
+++
+++jobs:
+++  check:
+++    runs-on: ubuntu-latest
+++    steps:
+++      - uses: actions/checkout@v4
+++        with:
+++          ref: custom
+++
+++      - name: Compare upstream release with fork base
+++        uses: actions/github-script@v7
+++        with:
+++          script: |
+++            const fs = require('fs');
+++            const base = fs.readFileSync('fork/upstream-base', 'utf8').trim();
+++            const upstream = await github.rest.repos.getLatestRelease({
+++              owner: 'big-dictator', repo: 'LiquidTab'
+++            }).catch(() => null);
+++            if (!upstream) {
+++              core.info('上游还没有 release，跳过');
+++              return;
+++            }
+++            const latest = upstream.data.tag_name;
+++            core.info(`fork base=${base}, upstream latest=${latest}`);
+++            if (latest === base) return;
+++
+++            const title = `上游有新版本 ${latest}（当前基线 ${base}）`;
+++            const open = await github.rest.issues.listForRepo({
+++              owner: context.repo.owner, repo: context.repo.repo,
+++              state: 'open', per_page: 100
+++            });
+++            if (open.data.some(i => i.title === title)) return;
+++
+++            await github.rest.issues.create({
+++              owner: context.repo.owner, repo: context.repo.repo,
+++              title,
+++              body: [
+++                `上游 [LiquidTab](${upstream.data.html_url}) 发布了 \`${latest}\`。`,
+++                '',
+++                '同步步骤：',
+++                '',
+++                '```bash',
+++                'git fetch upstream --tags',
+++                `tools/sync-upstream.sh ${latest}`,
+++                'git push origin custom --follow-tags',
+++                '```',
+++                '',
+++                '冲突处理见 `fork/README.md` 和 `fork/ADAPTING.md`。'
+++              ].join('\n')
+++            });
++diff --git a/fork/README.md b/fork/README.md
++index ef88709..0ca7df3 100644
++--- a/fork/README.md
+++++ b/fork/README.md
++@@ -48,6 +48,12 @@ tools/export-patches.sh        # 导出到 patches/
++ 
++ ## 出包
++ 
+++首次在新环境启用：
+++
+++1. 在仓库 Settings → Secrets and variables → Actions 配置 `KEYSTORE_B64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`；
+++2. 在 Actions 里启用 workflow（fork 默认是关的）；
+++3. 推送 `custom` 或手动运行 `build-apk`。
+++
++ 推送到 `custom` 或手动 `workflow_dispatch` 即构建：
++ 
++ - 有 `KEYSTORE_B64` 等 secrets：直接产出已签名 APK + SHA256；
+diff --git a/patches/0005-fix-ci-use-preinstalled-sdkmanager-and-platform-37.0.patch b/patches/0005-fix-ci-use-preinstalled-sdkmanager-and-platform-37.0.patch
+new file mode 100644
+index 0000000..d272b0e
+--- /dev/null
++++ b/patches/0005-fix-ci-use-preinstalled-sdkmanager-and-platform-37.0.patch
+@@ -0,0 +1,38 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:09:26 +0800
++Subject: [PATCH 05/12] fix(ci): use preinstalled sdkmanager and platform 37.0
++
++---
++ .github/workflows/build-apk.yml | 16 +++++++++++-----
++ 1 file changed, 11 insertions(+), 5 deletions(-)
++
++diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
++index 131efad..e0fa130 100644
++--- a/.github/workflows/build-apk.yml
+++++ b/.github/workflows/build-apk.yml
++@@ -32,13 +32,19 @@ jobs:
++           distribution: temurin
++           java-version: '21'
++ 
++-      - name: Set up Android SDK
++-        uses: android-actions/setup-android@v3
++-
++       - name: Install platform 37 and build tools
++         run: |
++-          yes | sdkmanager --licenses >/dev/null || true
++-          sdkmanager --channel=3 "platforms;android-37" "build-tools;37.0.0"
+++          set -euo pipefail
+++          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+++          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+++          test -x "$SDKM"
+++          yes | "$SDKM" --licenses >/dev/null || true
+++          "$SDKM" "platforms;android-37.0" "build-tools;37.0.0"
+++          # AGP 的 compileSdk = 37 按 android-37 目录查找；SDK 包名是 37.0。
+++          if [ -d "$SDK/platforms/android-37.0" ] && [ ! -e "$SDK/platforms/android-37" ]; then
+++            ln -s "$SDK/platforms/android-37.0" "$SDK/platforms/android-37"
+++          fi
+++          ls "$SDK/platforms" "$SDK/build-tools"
++ 
++       - name: Set up Gradle
++         uses: gradle/actions/setup-gradle@v4
+diff --git a/patches/0006-fix-ci-normalize-CRLF-gradlew-before-running.patch b/patches/0006-fix-ci-normalize-CRLF-gradlew-before-running.patch
+new file mode 100644
+index 0000000..bebe881
+--- /dev/null
++++ b/patches/0006-fix-ci-normalize-CRLF-gradlew-before-running.patch
+@@ -0,0 +1,26 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:12:49 +0800
++Subject: [PATCH 06/12] fix(ci): normalize CRLF gradlew before running
++
++---
++ .github/workflows/build-apk.yml | 6 +++++-
++ 1 file changed, 5 insertions(+), 1 deletion(-)
++
++diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
++index e0fa130..c150f46 100644
++--- a/.github/workflows/build-apk.yml
+++++ b/.github/workflows/build-apk.yml
++@@ -58,7 +58,11 @@ jobs:
++           echo "code=$CODE" >> "$GITHUB_OUTPUT"
++ 
++       - name: Assemble release
++-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+++        run: |
+++          # 上游发布的 gradlew 是 CRLF，Linux 上 shebang 会带 \r。
+++          sed -i 's/\r$//' gradlew
+++          chmod +x gradlew
+++          ./gradlew :app:assembleRelease --no-daemon --stacktrace
++ 
++       - name: Sign APK
++         if: env.KEYSTORE_B64 != ''
+diff --git a/patches/0007-docs-fork-record-verified-matrix-and-patch-log.patch b/patches/0007-docs-fork-record-verified-matrix-and-patch-log.patch
+new file mode 100644
+index 0000000..8ac7b63
+--- /dev/null
++++ b/patches/0007-docs-fork-record-verified-matrix-and-patch-log.patch
+@@ -0,0 +1,46 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:13:57 +0800
++Subject: [PATCH 07/12] docs(fork): record verified matrix and patch log
++
++---
++ fork/PATCHES.md  |  3 ++-
++ fork/VERIFIED.md | 15 +++++++++++++++
++ 2 files changed, 17 insertions(+), 1 deletion(-)
++ create mode 100644 fork/VERIFIED.md
++
++diff --git a/fork/PATCHES.md b/fork/PATCHES.md
++index 0a1b6d7..3c26606 100644
++--- a/fork/PATCHES.md
+++++ b/fork/PATCHES.md
++@@ -4,7 +4,8 @@
++ 
++ | 提交 | 范围 | 说明 |
++ | --- | --- | --- |
++-| `fix(xhs): hide native search hint layer` | 小红书 | 只隐藏搜索图标时，9.50 顶栏会剩一个带背景的搜索提示 `TextView`。改为按结构隐藏整个搜索层，保留图标可点。 |
+++| `0db21fa fix(xhs): hide native search hint layer` | 小红书 9.50 | 只隐藏搜索图标时，顶栏会剩一个带背景的搜索提示 `TextView`（文案“搜索笔记，用户和商品”）。按结构隐藏整个搜索层，保留图标可点。 |
+++| `39fe371 fix(ci): normalize CRLF gradlew` | CI | 上游 `gradlew` 是 CRLF，Linux runner 无法执行。 |
++ 
++ 补丁原则：
++ 
++diff --git a/fork/VERIFIED.md b/fork/VERIFIED.md
++new file mode 100644
++index 0000000..7878329
++--- /dev/null
+++++ b/fork/VERIFIED.md
++@@ -0,0 +1,15 @@
+++# 实测记录
+++
+++> 只记录真正在设备上看过的组合。应用升级后，相关行需要重新验。
+++
+++| 应用 | 包名 | 应用版本 | 模块版本/提交 | 页面 | 结果 | 备注 |
+++| --- | --- | --- | --- | --- | --- | --- |
+++| 小红书 | `com.xingin.xhs` | 9.50.0（本机 APK 基线） | custom（搜索层补丁） | 首页/发现 | 待实机验证 | 顶栏搜索层结构已按 `r/lcv|l cw|lcx|nyc` 布局核对 |
+++
+++新增记录时写清：设备折叠/展开状态、深浅色、是否开了顶栏、点了哪些按钮。
+++
+++## 适配优先级
+++
+++1. 先保底栏：底栏不出现/错位优先修，顶栏是增强。
+++2. 顶栏只在用户开启该应用 `*_top_bar` 时生效；失败要回退原生。
+++3. 隐藏原生控件时只动 alpha，保住原生点击目标。
+diff --git a/patches/0008-fix-xhs-compile-fixes-and-structural-search-layer-re.patch b/patches/0008-fix-xhs-compile-fixes-and-structural-search-layer-re.patch
+new file mode 100644
+index 0000000..3885041
+--- /dev/null
++++ b/patches/0008-fix-xhs-compile-fixes-and-structural-search-layer-re.patch
+@@ -0,0 +1,117 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:23:36 +0800
++Subject: [PATCH 08/12] fix(xhs): compile fixes and structural search layer
++ report
++
++---
++ .../hook/adapters/xhs/XhsSearchChrome.kt      | 47 +++++++++++++++----
++ 1 file changed, 38 insertions(+), 9 deletions(-)
++
++diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++index 5d46224..50c9d35 100644
++--- a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
+++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++@@ -39,6 +39,7 @@ internal class XhsSearchChrome(
++ 
++     fun suppress(hide: (View, Boolean) -> Unit) {
++         if (!icon.isAttachedToWindow || icon.width <= 0 || icon.height <= 0) return
+++        reportPathOnce()
++         val d = icon.resources.displayMetrics.density
++         icon.getLocationInWindow(location)
++         val iconX = location[0]
++@@ -53,7 +54,7 @@ internal class XhsSearchChrome(
++         var depth = 0
++         while (layer != null && layer !== root && depth < 3) {
++             if (isDedicatedLayer(layer, iconRight)) {
++-                hide(layer)
+++                hide(layer, false)
++                 report("layer", layer)
++                 return
++             }
++@@ -80,7 +81,13 @@ internal class XhsSearchChrome(
++             if (right < leftOfTabs() - (8f * d).toInt()) continue
++             if (bottom < iconY - limit || top > iconBottom + limit) continue
++             if (abs(top + text.height / 2 - iconCenterY) > limit) continue
++-            hide(text)
+++            hide(text, false)
+++            val box = (text.parent as? ViewGroup)?.takeIf { parent ->
+++                parent !== header && !parent.isClickable && parent.width <= root.width * .8f &&
+++                    parent.height <= text.height * 2 && !contains(parent, tabs) && !contains(parent, icon) &&
+++                    (parent.background != null || text.background == null)
+++            }
+++            if (box != null) hide(box, false)
++             hidden++
++         }
++         if (hidden > 0) report("hint", candidates.firstOrNull { text ->
++@@ -102,7 +109,7 @@ internal class XhsSearchChrome(
++         if (!Rect.intersects(bounds, iconRect)) return false
++         // The layer must actually carry the search entry left of the icon.
++         val text = findHintText(layer, iconRight) ?: return false
++-        return text.width > icon.width && text.background != null
+++        return text.width > icon.height / 2
++     }
++ 
++     private fun findHintText(scope: ViewGroup, iconRight: Int): TextView? {
++@@ -113,8 +120,7 @@ internal class XhsSearchChrome(
++             val view = pending.removeAt(pending.size - 1)
++             if (view === icon || view is AdapterOwnedOverlay || view is GlassHostLayout) continue
++             if (view is TextView) {
++-                if (!view.text.isNullOrBlank() && view.isShown && view.width > 0 &&
++-                    view.background != null) {
+++                if (!view.text.isNullOrBlank() && view.isShown && view.width > 0) {
++                     view.getLocationInWindow(location)
++                     if (location[0] + view.width <= iconRight + (4f * view.resources.displayMetrics.density).toInt())
++                         return view
++@@ -142,17 +148,18 @@ internal class XhsSearchChrome(
++     }
++ 
++     private fun collect(scope: ViewGroup, out: MutableList<TextView>, depth: Int, budget: Int): Int {
++-        if (budget <= 0 || depth > 8) return budget
+++        var remaining = budget
+++        if (remaining <= 0 || depth > 8) return remaining
++         for (i in 0 until scope.childCount) {
++-            if (budget <= 0) return budget
+++            if (remaining <= 0) return remaining
++             val child = scope.getChildAt(i)
++             if (child === tabs || child === menu || child === icon) continue
++             if (child is AdapterOwnedOverlay || child is GlassHostLayout) continue
++             if (contains(child, tabs) || (menu != null && contains(child, menu))) continue
++             if (child is TextView) out.add(child)
++-            else if (child is ViewGroup) budget = collect(child, out, depth + 1, budget - 1)
+++            else if (child is ViewGroup) remaining = collect(child, out, depth + 1, remaining - 1)
++         }
++-        return budget
+++        return remaining
++     }
++ 
++     private fun contains(ancestor: View, target: View): Boolean {
++@@ -180,6 +187,28 @@ internal class XhsSearchChrome(
++         return false
++     }
++ 
+++    private var pathReported = false
+++    private fun reportPathOnce() {
+++        if (pathReported) return
+++        pathReported = true
+++        val chain = ArrayList<String>(6)
+++        var view: View? = icon
+++        var depth = 0
+++        while (view != null && view !== root && depth < 6) {
+++            chain.add("${view.javaClass.simpleName}[${view.width}x${view.height}]" +
+++                if (view.background != null) "*" else "")
+++            view = view.parent as? View
+++            depth++
+++        }
+++        val siblings = (icon.parent as? ViewGroup)?.let { parent ->
+++            (0 until parent.childCount).joinToString(",") { index ->
+++                val child = parent.getChildAt(index)
+++                child.javaClass.simpleName + if (child is TextView) ":" + (child.text ?: "") else ""
+++            }
+++        }
+++        android.util.Log.i("LiquidTabXhsTop", "search path=${chain.joinToString(">")} siblings=[$siblings]")
+++    }
+++
++     private fun report(kind: String, hidden: View?) {
++         if (reported) return
++         reported = true
+diff --git a/patches/0009-fix-xhs-discover-native-search-capsule-in-tab-band.patch b/patches/0009-fix-xhs-discover-native-search-capsule-in-tab-band.patch
+new file mode 100644
+index 0000000..28d8118
+--- /dev/null
++++ b/patches/0009-fix-xhs-discover-native-search-capsule-in-tab-band.patch
+@@ -0,0 +1,286 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:25:47 +0800
++Subject: [PATCH 09/12] fix(xhs): discover native search capsule in tab band
++
++---
++ .../hook/adapters/xhs/XhsSearchChrome.kt      | 199 ++++++++----------
++ 1 file changed, 91 insertions(+), 108 deletions(-)
++
++diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++index 50c9d35..547d2a9 100644
++--- a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
+++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsSearchChrome.kt
++@@ -11,20 +11,20 @@ import kotlin.math.abs
++ /**
++  * Native search entry chrome that survives hiding the magnifier alone.
++  *
++- * 小红书 9.50 keeps the search hint pill ("搜索笔记，用户和商品") in the same thin
++- * layer as the search icon: `ConstraintLayout(icon + hint TextView)`. The top bar
++- * hides the icon so the native click target stays alive, which leaves the pill
++- * and its background visible next to our glass search key.
+++ * 小红书 keeps the search hint pill next to the header's search key. In 9.50 it
+++ * was a `TextView` ("搜索笔记，用户和商品") sharing a thin layer with the icon; in
+++ * 9.55 the pill is a separate right-side capsule whose magnifier is a compound
+++ * drawable, so hiding the icon view never removes it. The glass top bar then has
+++ * two search entries: our key and the native pill.
++  *
++- * Binding stays structural and never reads a version:
++- * - preferred: the icon's parent is a shallow layer that holds no tabs, menu or
++- *   pager, is wider than the icon and is not taller than one row; hide the layer;
++- * - fallback: layouts that put the icon directly in the page root (RedViewStub
++- *   inflated pill) hide the right-side hint text view in the header band.
+++ * Binding is structural, never version based:
+++ * - preferred: the icon's parent is a shallow layer without tabs/menu/pager;
+++ *   hide that layer;
+++ * - fallback: scan the decor tree for live right-side text capsules in the tab
+++ *   band (background on the text or its immediate wrapper) and hide them.
++  *
++- * Only alpha is touched: the icon stays attached and enabled so `performClick`
++- * from the glass key keeps using the native route. A rejected/ambiguous layout
++- * keeps the native chrome and reports once instead of guessing.
+++ * Only alpha is touched, so the native click target stays attached and enabled
+++ * for the glass key. Ambiguous layouts keep the native chrome and log once.
++  */
++ internal class XhsSearchChrome(
++     private val root: View,
++@@ -36,24 +36,17 @@ internal class XhsSearchChrome(
++     private val location = IntArray(2)
++     private val iconRect = Rect()
++     private val bounds = Rect()
+++    private val hints = ArrayList<TextView>(2)
++ 
++     fun suppress(hide: (View, Boolean) -> Unit) {
++         if (!icon.isAttachedToWindow || icon.width <= 0 || icon.height <= 0) return
++         reportPathOnce()
++         val d = icon.resources.displayMetrics.density
++-        icon.getLocationInWindow(location)
++-        val iconX = location[0]
++-        val iconY = location[1]
++-        val iconBottom = iconY + icon.height
++-        val iconCenterY = iconY + icon.height / 2
++-        val iconRight = iconX + icon.width
++-        iconRect.set(iconX, iconY, iconRight, iconBottom)
++ 
++-        // Preferred: the icon and the hint text share one dedicated layer.
++         var layer = icon.parent as? ViewGroup
++         var depth = 0
++         while (layer != null && layer !== root && depth < 3) {
++-            if (isDedicatedLayer(layer, iconRight)) {
+++            if (isDedicatedLayer(layer)) {
++                 hide(layer, false)
++                 report("layer", layer)
++                 return
++@@ -62,41 +55,70 @@ internal class XhsSearchChrome(
++             depth++
++         }
++ 
++-        // Fallback: the pill lives next to the icon in the header root.
++-        val header = headerScope() ?: return
++-        val limit = maxOf((16f * d).toInt(), (icon.height * .8f).toInt())
++-        val candidates = ArrayList<TextView>(4)
++-        collect(header, candidates, 0, 300)
+++        if (hints.any { !it.isAttachedToWindow } || hints.isEmpty()) {
+++            hints.clear()
+++            discoverHints(hints)
+++        }
++         var hidden = 0
++-        for (text in candidates) {
++-            if (!text.isShown || text.text.isNullOrBlank() || text.background == null) continue
++-            if (text.width <= 0 || text.width > root.width * .8f) continue
++-            text.getLocationInWindow(location)
++-            val top = location[1]
++-            val bottom = top + text.height
++-            val right = location[0] + text.width
++-            // Right half of the header only: the login chip and tab labels sit
++-            // left of this band and must keep their native behaviour.
++-            if (right > iconRight + (4f * d).toInt()) continue
++-            if (right < leftOfTabs() - (8f * d).toInt()) continue
++-            if (bottom < iconY - limit || top > iconBottom + limit) continue
++-            if (abs(top + text.height / 2 - iconCenterY) > limit) continue
+++        for (text in hints) {
+++            if (!text.isAttachedToWindow) continue
++             hide(text, false)
++             val box = (text.parent as? ViewGroup)?.takeIf { parent ->
++-                parent !== header && !parent.isClickable && parent.width <= root.width * .8f &&
++-                    parent.height <= text.height * 2 && !contains(parent, tabs) && !contains(parent, icon) &&
+++                parent !== root && !parent.isClickable && parent.width <= root.width * .8f &&
+++                    parent.height <= text.height * 2 &&
++                     (parent.background != null || text.background == null)
++             }
++             if (box != null) hide(box, false)
++             hidden++
++         }
++-        if (hidden > 0) report("hint", candidates.firstOrNull { text ->
++-            text.isShown && !text.text.isNullOrBlank() && text.background != null
++-        })
+++        if (hidden > 0) report("hint", hints.firstOrNull())
++     }
++ 
++-    private fun isDedicatedLayer(layer: ViewGroup, iconRight: Int): Boolean {
++-        if (contains(layer, tabs)) return false
+++    /**
+++     * A live right-side capsule inside the tab band. Feed cards are below the
+++     * band and the recycler subtree is skipped, so ordinary note text never
+++     * qualifies. Our own glass hosts are AdapterOwnedOverlay and are skipped.
+++     */
+++    private fun discoverHints(out: MutableList<TextView>) {
+++        if (tabs.width <= 0) return
+++        val d = icon.resources.displayMetrics.density
+++        tabs.getLocationInWindow(location)
+++        val tabLeft = location[0]
+++        val tabTop = location[1]
+++        val tabRight = tabLeft + tabs.width
+++        val tabBottom = tabTop + tabs.height
+++        val band = maxOf(tabs.height * 2, (40f * d).toInt())
+++        val pending = ArrayDeque<View>()
+++        pending.add(root)
+++        var budget = 600
+++        while (pending.isNotEmpty() && budget-- > 0) {
+++            val view = pending.removeFirst()
+++            if (view === tabs || view === menu || view === icon) continue
+++            if (view is AdapterOwnedOverlay || view is GlassHostLayout) continue
+++            if (view is TextView) {
+++                if (!view.isShown || view.text.isNullOrBlank() || view.width <= 0) continue
+++                if (view.width > root.width * .75f) continue
+++                if (contains(view, tabs)) continue
+++                if (view.background == null && (view.parent as? View)?.background == null) continue
+++                view.getLocationInWindow(location)
+++                val left = location[0]
+++                val top = location[1]
+++                val bottom = top + view.height
+++                if (left < tabRight - (8f * d).toInt()) continue
+++                if (bottom < tabTop - band || top > tabBottom + band) continue
+++                if (view.text.toString().trim().length < 1) continue
+++                out.add(view)
+++                continue
+++            }
+++            if (view is ViewGroup) {
+++                if (isRecycler(view)) continue
+++                for (i in 0 until view.childCount) pending.add(view.getChildAt(i))
+++            }
+++        }
+++    }
+++
+++    private fun isDedicatedLayer(layer: ViewGroup): Boolean {
+++        if (layer === root || contains(layer, tabs)) return false
++         if (menu != null && contains(layer, menu)) return false
++         if (containsPager(layer)) return false
++         if (containsOwned(layer)) return false
++@@ -104,62 +126,21 @@ internal class XhsSearchChrome(
++         if (layer.height !in 1..(icon.height * 2.6f).toInt()) return false
++         layer.getLocationInWindow(location)
++         bounds.set(location[0], location[1], location[0] + layer.width, location[1] + layer.height)
++-        // Stay in the header band: a page-sized layer is never a search row.
++-        if (bounds.width() > root.width * .98f && bounds.height() > icon.height * 1.8f) return false
+++        icon.getLocationInWindow(location)
+++        iconRect.set(location[0], location[1], location[0] + icon.width, location[1] + icon.height)
++         if (!Rect.intersects(bounds, iconRect)) return false
++-        // The layer must actually carry the search entry left of the icon.
++-        val text = findHintText(layer, iconRight) ?: return false
++-        return text.width > icon.height / 2
+++        // A row-wide layer that also covers the pager is the page, not search.
+++        if (bounds.height() > icon.height * 2 && bounds.height() > root.height / 4) return false
+++        return layer.anyText()
++     }
++ 
++-    private fun findHintText(scope: ViewGroup, iconRight: Int): TextView? {
++-        val pending = ArrayList<View>(8)
++-        pending.add(scope)
++-        var budget = 40
++-        while (pending.isNotEmpty() && budget-- > 0) {
++-            val view = pending.removeAt(pending.size - 1)
++-            if (view === icon || view is AdapterOwnedOverlay || view is GlassHostLayout) continue
++-            if (view is TextView) {
++-                if (!view.text.isNullOrBlank() && view.isShown && view.width > 0) {
++-                    view.getLocationInWindow(location)
++-                    if (location[0] + view.width <= iconRight + (4f * view.resources.displayMetrics.density).toInt())
++-                        return view
++-                }
++-                continue
++-            }
++-            if (view is ViewGroup) for (i in 0 until view.childCount) pending.add(view.getChildAt(i))
+++    private fun ViewGroup.anyText(): Boolean {
+++        for (i in 0 until childCount) {
+++            val child = getChildAt(i)
+++            if (child is TextView && !child.text.isNullOrBlank() && child.isShown) return true
+++            if (child is ViewGroup && child !== this && child.anyText()) return true
++         }
++-        return null
++-    }
++-
++-    private fun headerScope(): ViewGroup? {
++-        var parent = icon.parent as? ViewGroup
++-        while (parent != null) {
++-            if (parent === root) return parent
++-            if (contains(parent, tabs)) return parent
++-            parent = parent.parent as? ViewGroup
++-        }
++-        return null
++-    }
++-
++-    private fun leftOfTabs(): Int {
++-        tabs.getLocationInWindow(location)
++-        return location[0]
++-    }
++-
++-    private fun collect(scope: ViewGroup, out: MutableList<TextView>, depth: Int, budget: Int): Int {
++-        var remaining = budget
++-        if (remaining <= 0 || depth > 8) return remaining
++-        for (i in 0 until scope.childCount) {
++-            if (remaining <= 0) return remaining
++-            val child = scope.getChildAt(i)
++-            if (child === tabs || child === menu || child === icon) continue
++-            if (child is AdapterOwnedOverlay || child is GlassHostLayout) continue
++-            if (contains(child, tabs) || (menu != null && contains(child, menu))) continue
++-            if (child is TextView) out.add(child)
++-            else if (child is ViewGroup) remaining = collect(child, out, depth + 1, remaining - 1)
++-        }
++-        return remaining
+++        return false
++     }
++ 
++     private fun contains(ancestor: View, target: View): Boolean {
++@@ -187,6 +168,12 @@ internal class XhsSearchChrome(
++         return false
++     }
++ 
+++    private fun isRecycler(view: View): Boolean =
+++        generateSequence(view.javaClass as Class<*>?) { it.superclass }.any {
+++            it.name == "androidx.recyclerview.widget.RecyclerView" ||
+++                it.name == "android.support.v7.widget.RecyclerView"
+++        }
+++
++     private var pathReported = false
++     private fun reportPathOnce() {
++         if (pathReported) return
++@@ -203,23 +190,19 @@ internal class XhsSearchChrome(
++         val siblings = (icon.parent as? ViewGroup)?.let { parent ->
++             (0 until parent.childCount).joinToString(",") { index ->
++                 val child = parent.getChildAt(index)
++-                child.javaClass.simpleName + if (child is TextView) ":" + (child.text ?: "") else ""
+++                child.javaClass.simpleName + if (child is TextView) ":" + child.text else ""
++             }
++         }
++-        android.util.Log.i("LiquidTabXhsTop", "search path=${chain.joinToString(">")} siblings=[$siblings]")
+++        android.util.Log.i("LiquidTabXhsTop",
+++            "search icon path=${chain.joinToString(">")} siblings=[$siblings]")
++     }
++ 
++     private fun report(kind: String, hidden: View?) {
++         if (reported) return
++         reported = true
++-        val layer = icon.parent as? ViewGroup
++-        val children = layer?.let { parent ->
++-            (0 until parent.childCount).joinToString(",") { index ->
++-                parent.getChildAt(index).javaClass.simpleName
++-            }
++-        }
+++        val text = hidden as? TextView
++         android.util.Log.i("LiquidTabXhsTop",
++-            "search chrome hidden by $kind; icon-parent=${layer?.javaClass?.name} children=[$children] " +
++-                "hidden=${hidden?.javaClass?.name}")
+++            "search chrome hidden by $kind class=${hidden?.javaClass?.name} " +
+++                "text=${text?.text?.take(20)} w=${hidden?.width} h=${hidden?.height}")
++     }
++ }
+diff --git a/patches/0010-fix-ci-skip-lintVitalRelease-docs-xhs-record-header-.patch b/patches/0010-fix-ci-skip-lintVitalRelease-docs-xhs-record-header-.patch
+new file mode 100644
+index 0000000..e60a826
+--- /dev/null
++++ b/patches/0010-fix-ci-skip-lintVitalRelease-docs-xhs-record-header-.patch
+@@ -0,0 +1,115 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:33:21 +0800
++Subject: [PATCH 10/12] fix(ci): skip lintVitalRelease; docs(xhs): record
++ header structure
++
++---
++ .github/workflows/build-apk.yml |  4 +-
++ fork/apps/xhs.md                | 82 +++++++++++++++++++++++++++++++++
++ 2 files changed, 85 insertions(+), 1 deletion(-)
++ create mode 100644 fork/apps/xhs.md
++
++diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
++index c150f46..f3d66c5 100644
++--- a/.github/workflows/build-apk.yml
+++++ b/.github/workflows/build-apk.yml
++@@ -62,7 +62,9 @@ jobs:
++           # 上游发布的 gradlew 是 CRLF，Linux 上 shebang 会带 \r。
++           sed -i 's/\r$//' gradlew
++           chmod +x gradlew
++-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+++          # 上游本身用反射访问非 SDK API；lintVital 在 targetSdk 37 下会直接判死，
+++          # 但这是 LSPosed 模块的既有实现，不是本次补丁引入的。
+++          ./gradlew :app:assembleRelease --no-daemon --stacktrace -x lintVitalRelease
++ 
++       - name: Sign APK
++         if: env.KEYSTORE_B64 != ''
++diff --git a/fork/apps/xhs.md b/fork/apps/xhs.md
++new file mode 100644
++index 0000000..b2d8065
++--- /dev/null
+++++ b/fork/apps/xhs.md
++@@ -0,0 +1,82 @@
+++# 小红书适配记录
+++
+++包名：`com.xingin.xhs`（注意：**不是** `com.xingin.xhs.xxx` 的独立进程名）
+++
+++## 已核对的结构
+++
+++### 9.50.0（本机 APK 基线）
+++
+++首页头部布局（`r/lcv.xml`、`r/lcw.xml`、`r/lcx.xml`、`r/nyc.xml`）：
+++
+++```
+++ConstraintLayout 页面根
+++├─ FrameLayout 0x...c0d → HomeViewPager（内容）
+++└─ FrameLayout 头部
+++   ├─ ImageView 头部背景
+++   ├─ FrameLayout 顶栏行
+++   │  ├─ TextView 登录（默认 GONE）
+++   │  ├─ HomeTokenTextView 登录 token（默认 GONE）
+++   │  ├─ ImageView 菜单（0x7f0930d1）
+++   │  ├─ HomeTabLayout（0x7f093342，关注/发现/同城）
+++   │  └─ 两个装饰 View
+++   ├─ 分割线 View
+++   └─ ConstraintLayout 搜索层（0x7f094f98）
+++      ├─ TextToken 搜索标题（默认 GONE）
+++      ├─ TextView 搜索提示（0x7f09280d，文案“搜索笔记，用户和商品”，带背景、drawableStart）
+++      └─ ImageView 搜索图标（0x7f092e7c，contentDescription“搜索”）
+++```
+++
+++结论：只隐藏搜索图标时，同一层的提示 `TextView` 会留下背景框和文案。
+++
+++### 9.55.0（本机已安装）
+++
+++- 顶部结构仍是「顶栏行 + 右侧搜索胶囊」，但搜索胶囊里的放大镜是 `TextView` 的
+++  compound drawable，不是独立 `ImageView`；搜索词是热词（如“调酒…”），不一定是“搜索”。
+++- 因此不能靠文案或图标 ID 识别，只能按“顶栏带内、标签右侧、带背景的文字胶囊”结构识别。
+++
+++## 模块里的处理
+++
+++`XhsTopBar` 的顶栏宿主在窗口坐标 y=0 处生成 4 个玻璃宿主：
+++
+++| 角色 | 宽度 | 作用 |
+++| --- | --- | --- |
+++| 左 | 88px | 侧边栏 |
+++| 中 | 439px | 关注/发现/同城 |
+++| 频道 | 160px | 当前频道（发现页） |
+++| 右 | 88px | 搜索（点击原生搜索目标） |
+++
+++隐藏原生控件统一走 `Session.hide()`（只把 alpha 设 0，保留点击目标）：
+++
+++- `hide(nativeTabs)`：原生 HomeTabLayout；
+++- `hide(menuSource)` / `hide(searchSource)`：菜单和搜索图标；
+++- `XhsHeaderChrome.suppress`：头部背景图和分割线；
+++- `XhsSearchChrome.suppress`：右侧搜索胶囊（本仓库补丁）。
+++
+++`XhsSearchChrome` 的识别顺序：
+++
+++1. 图标的父层若只含搜索文字、不含 tabs/menu/pager，且高度不超过一行，整层隐藏；
+++2. 否则扫描 decor 树，找“顶栏带内、标签右侧、文字非空、自身或父层有背景”的 `TextView`，
+++   隐藏文字并连带隐藏窄背景包装层；
+++3. 找不到就保留原生界面，并在 logcat 打一次
+++   `LiquidTabXhsTop: search icon path=... siblings=[...]`，用这条日志继续定位。
+++
+++## 排查命令
+++
+++```bash
+++# 模块加载/顶栏宿主
+++logcat -d | grep -i "LiquidTabXhsTop\|OfflineGlass.*xingin"
+++
+++# LSPosed 模块日志（需要 root）
+++F=$(ls -t /data/adb/lspd/log/modules_*.log | head -1)
+++grep -i "offlineglass" "$F" | tail -30
+++```
+++
+++看到 `installed com.xingin.xhs slots=5` 说明底栏和顶栏都装上了；顶栏宿主日志形如
+++`host=906,0 88x88`。
+++
+++## 已知风险
+++
+++- `menuSource`/`searchSource` 是结构推断，应用改版后可能先失效；`ready` 失败时顶栏整体不出现，原生界面保留。
+++- 搜索胶囊的判定必须在顶栏带内，否则会误伤信息流卡片文字；当前实现跳过 RecyclerView 子树。
+++- 折叠屏内屏若走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类），当前 `XhsTopBar` 不接管；
+++  这种情况需要单独验证，不要假设手机布局的结构。
+diff --git a/patches/0011-feat-xhs-support-PadHomeTabLayout-header-on-fold-inn.patch b/patches/0011-feat-xhs-support-PadHomeTabLayout-header-on-fold-inn.patch
+new file mode 100644
+index 0000000..3d72bef
+--- /dev/null
++++ b/patches/0011-feat-xhs-support-PadHomeTabLayout-header-on-fold-inn.patch
+@@ -0,0 +1,56 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:40:54 +0800
++Subject: [PATCH 11/12] feat(xhs): support PadHomeTabLayout header on fold
++ inner screen
++
++---
++ .../hook/adapters/xhs/XhsTopBar.kt            | 35 +++++++++++--------
++ 1 file changed, 21 insertions(+), 14 deletions(-)
++
++diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
++index f253da4..3fb654f 100644
++--- a/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
+++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/xhs/XhsTopBar.kt
++@@ -38,20 +38,27 @@ internal object XhsTopBar {
++                 reference.get()?.takeIf { !it.stopped && it.ready && it.config.enabled && it.root === view.rootView }?.channelMotion
++             }
++         }
++-        runCatching {
++-            val type = Class.forName("com.xingin.xhs.homepage.tabbar.view.HomeTabLayout", false, loader)
++-            XposedBridge.hookAllConstructors(type, object : XC_MethodHook() {
++-                override fun afterHookedMethod(param: MethodHookParam) {
++-                    val row = param.thisObject as? ViewGroup ?: return
++-                    if (observed.put(row, true) == true) return
++-                    row.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
++-                        override fun onViewAttachedToWindow(v: View) { row.post { attach(row) } }
++-                        override fun onViewDetachedFromWindow(v: View) { sessions.remove(row)?.get()?.stop() }
++-                    })
++-                    row.post { attach(row) }
++-                }
++-            })
++-        }.onFailure { android.util.Log.w("LiquidTabXhsTop", "native header retained", it) }
+++        // 手机布局是 HomeTabLayout，内屏/平板布局是 PadHomeTabLayout；两者是兄弟类，
+++        // 没有继承关系，必须分别 hook，否则内屏会完全退回原生头部。
+++        listOf(
+++            "com.xingin.xhs.homepage.tabbar.view.HomeTabLayout",
+++            "com.xingin.xhs.homepage.tabbar.view.PadHomeTabLayout",
+++        ).forEach { name ->
+++            runCatching {
+++                val type = Class.forName(name, false, loader)
+++                XposedBridge.hookAllConstructors(type, object : XC_MethodHook() {
+++                    override fun afterHookedMethod(param: MethodHookParam) {
+++                        val row = param.thisObject as? ViewGroup ?: return
+++                        if (observed.put(row, true) == true) return
+++                        row.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+++                            override fun onViewAttachedToWindow(v: View) { row.post { attach(row) } }
+++                            override fun onViewDetachedFromWindow(v: View) { sessions.remove(row)?.get()?.stop() }
+++                        })
+++                        row.post { attach(row) }
+++                    }
+++                })
+++            }.onFailure { android.util.Log.w("LiquidTabXhsTop", "$name unavailable", it) }
+++        }
++     }
++     private fun attach(row: ViewGroup) {
++         if (!row.isAttachedToWindow || sessions[row]?.get() != null) return
+diff --git a/patches/0012-docs-fork-verified-results-for-xhs-9.55-and-pad-layo.patch b/patches/0012-docs-fork-verified-results-for-xhs-9.55-and-pad-layo.patch
+new file mode 100644
+index 0000000..c36a937
+--- /dev/null
++++ b/patches/0012-docs-fork-verified-results-for-xhs-9.55-and-pad-layo.patch
+@@ -0,0 +1,87 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
++Date: Mon, 23 Nov 2026 19:53:33 +0800
++Subject: [PATCH 12/12] docs(fork): verified results for xhs 9.55 and pad
++ layout
++
++---
++ fork/PATCHES.md  | 21 ++++++++++++++++-----
++ fork/VERIFIED.md | 19 ++++++++++---------
++ fork/apps/xhs.md |  4 ++--
++ 3 files changed, 28 insertions(+), 16 deletions(-)
++
++diff --git a/fork/PATCHES.md b/fork/PATCHES.md
++index 3c26606..cebc893 100644
++--- a/fork/PATCHES.md
+++++ b/fork/PATCHES.md
++@@ -2,13 +2,24 @@
++ 
++ 基线：见 [`upstream-base`](upstream-base)。
++ 
++-| 提交 | 范围 | 说明 |
++-| --- | --- | --- |
++-| `0db21fa fix(xhs): hide native search hint layer` | 小红书 9.50 | 只隐藏搜索图标时，顶栏会剩一个带背景的搜索提示 `TextView`（文案“搜索笔记，用户和商品”）。按结构隐藏整个搜索层，保留图标可点。 |
++-| `39fe371 fix(ci): normalize CRLF gradlew` | CI | 上游 `gradlew` 是 CRLF，Linux runner 无法执行。 |
+++## 小红书
+++
+++| 提交 | 说明 |
+++| --- | --- |
+++| `0db21fa` `fix(xhs): hide native search hint layer` | 只隐藏搜索图标时，9.50/9.55 顶栏会剩一个带背景的搜索胶囊（提示文案或热词）。新增 `XhsSearchChrome`，按结构隐藏整层/胶囊。 |
+++| `5b76f2e` `fix(xhs): discover native search capsule in tab band` | 9.55 的放大镜是 `TextView` 的 compound drawable，不是独立图标；改为扫描顶栏带内、标签右侧、带背景的文字胶囊。 |
+++| `f8be902` `feat(xhs): support PadHomeTabLayout` | 内屏走 `PadHomeTabLayout`，与 `HomeTabLayout` 是兄弟类；补 hook，否则内屏完全退回原生头部。 |
+++
+++## CI / 仓库
+++
+++| 提交 | 说明 |
+++| --- | --- |
+++| `1d8900d` | custom 分支、构建与同步脚本、README |
+++| `390abc5` | 上游 release 监视 workflow |
+++| `a8f150a` / `39fe371` / `b19f6e6` | Linux runner：SDK 37.0 安装、CRLF `gradlew`、跳过 `lintVitalRelease` |
++ 
++ 补丁原则：
++ 
++ - 只动应用目录，共享层改动要单独说明；
++ - 按结构绑定，不按版本号；
++-- 失败保留原生 UI 并打日志。
+++- 失败保留原生 UI，不吞异常。
++diff --git a/fork/VERIFIED.md b/fork/VERIFIED.md
++index 7878329..d2d270b 100644
++--- a/fork/VERIFIED.md
+++++ b/fork/VERIFIED.md
++@@ -2,14 +2,15 @@
++ 
++ > 只记录真正在设备上看过的组合。应用升级后，相关行需要重新验。
++ 
++-| 应用 | 包名 | 应用版本 | 模块版本/提交 | 页面 | 结果 | 备注 |
++-| --- | --- | --- | --- | --- | --- | --- |
++-| 小红书 | `com.xingin.xhs` | 9.50.0（本机 APK 基线） | custom（搜索层补丁） | 首页/发现 | 待实机验证 | 顶栏搜索层结构已按 `r/lcv|l cw|lcx|nyc` 布局核对 |
+++| 应用 | 应用版本 | 模块构建 | 屏幕/条件 | 结果 |
+++| --- | --- | --- | --- | --- |
+++| 小红书 | 9.55.0 | 官方 2.1.2（基线） | 外屏 1168×1712，密度 350 | 右上角搜索键旁边有原生胶囊：放大镜 + 热词“调酒…”，背景框明显 |
+++| 小红书 | 9.55.0 | 本仓库 custom（`0db21fa` 起） | 外屏 1168×1712，密度 350 | 原生胶囊消失，只保留玻璃搜索键；底栏、顶栏正常 |
+++| 小红书 | 9.55.0 | 本仓库 custom（`f8be902`） | 外屏 + `wm density 311`（≈600dp，触发平板/内屏布局） | 顶栏 4 个玻璃宿主都出现，搜索为玻璃圆钮，无原生胶囊 |
+++| 小红书 | 9.55.0 | 本仓库 custom（`f8be902`） | 真实内屏 1672×2364 | **未实测**：测试时内屏 display state=OFF；需要展开后再看一眼 |
++ 
++-新增记录时写清：设备折叠/展开状态、深浅色、是否开了顶栏、点了哪些按钮。
+++复现/复核要点：
++ 
++-## 适配优先级
++-
++-1. 先保底栏：底栏不出现/错位优先修，顶栏是增强。
++-2. 顶栏只在用户开启该应用 `*_top_bar` 时生效；失败要回退原生。
++-3. 隐藏原生控件时只动 alpha，保住原生点击目标。
+++- 官方版在搜索键右侧会留一个带背景的搜索胶囊；本仓库补丁后该胶囊整层消失，搜索点击仍走原生。
+++- 测试时改过 `wm density 311`，已还原为 Override density **350**（物理 440）；`screen_off_timeout` 已还原 **60000**。
+++- 折叠屏内屏走 `PadHomeTabLayout`，已加入 hook；如果内屏仍有残留，先看 `fork/apps/xhs.md` 的日志命令。
++diff --git a/fork/apps/xhs.md b/fork/apps/xhs.md
++index b2d8065..5648c01 100644
++--- a/fork/apps/xhs.md
+++++ b/fork/apps/xhs.md
++@@ -78,5 +78,5 @@ grep -i "offlineglass" "$F" | tail -30
++ 
++ - `menuSource`/`searchSource` 是结构推断，应用改版后可能先失效；`ready` 失败时顶栏整体不出现，原生界面保留。
++ - 搜索胶囊的判定必须在顶栏带内，否则会误伤信息流卡片文字；当前实现跳过 RecyclerView 子树。
++-- 折叠屏内屏若走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类），当前 `XhsTopBar` 不接管；
++-  这种情况需要单独验证，不要假设手机布局的结构。
+++- 折叠屏内屏走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类）。`XhsTopBar.install` 现在同时 hook
+++  两个类；600dp 宽度模拟下顶栏和搜索胶囊隐藏都正常，但真实内屏仍需展开复核。

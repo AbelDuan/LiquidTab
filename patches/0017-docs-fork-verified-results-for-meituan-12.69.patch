@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 11:00:30 +0800
+Subject: [PATCH 17/17] docs(fork): verified results for meituan 12.69
+
+---
+ fork/PATCHES.md  | 6 ++++++
+ fork/VERIFIED.md | 3 +++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/fork/PATCHES.md b/fork/PATCHES.md
+index cebc893..b5e424d 100644
+--- a/fork/PATCHES.md
++++ b/fork/PATCHES.md
+@@ -10,6 +10,12 @@
+ | `5b76f2e` `fix(xhs): discover native search capsule in tab band` | 9.55 的放大镜是 `TextView` 的 compound drawable，不是独立图标；改为扫描顶栏带内、标签右侧、带背景的文字胶囊。 |
+ | `f8be902` `feat(xhs): support PadHomeTabLayout` | 内屏走 `PadHomeTabLayout`，与 `HomeTabLayout` 是兄弟类；补 hook，否则内屏完全退回原生头部。 |
+ 
++## 美团
++
++| 提交 | 说明 |
++| --- | --- |
++| `d5004ea` `fix(meituan): follow the native slot count` | 12.69.402 撤掉视频 tab、底栏多包一层 `PTLinearLayout`，行内只剩 4 个槽；不再写死 5，选中/点击/静态切片全部改按 slot 序号，并新增 `navigationHiddenMask` 钩子避免「视频位」误伤真实 tab。 |
++
+ ## CI / 仓库
+ 
+ | 提交 | 说明 |
+diff --git a/fork/VERIFIED.md b/fork/VERIFIED.md
+index d2d270b..50cbbdd 100644
+--- a/fork/VERIFIED.md
++++ b/fork/VERIFIED.md
+@@ -8,6 +8,9 @@
+ | 小红书 | 9.55.0 | 本仓库 custom（`0db21fa` 起） | 外屏 1168×1712，密度 350 | 原生胶囊消失，只保留玻璃搜索键；底栏、顶栏正常 |
+ | 小红书 | 9.55.0 | 本仓库 custom（`f8be902`） | 外屏 + `wm density 311`（≈600dp，触发平板/内屏布局） | 顶栏 4 个玻璃宿主都出现，搜索为玻璃圆钮，无原生胶囊 |
+ | 小红书 | 9.55.0 | 本仓库 custom（`f8be902`） | 真实内屏 1672×2364 | **未实测**：测试时内屏 display state=OFF；需要展开后再看一眼 |
++| 美团 | 12.69.402 | 官方 2.1.2（基线） | 外屏 1168×1712 | 底栏只剩 3 个图标、位置偏移、点击错位 |
++| 美团 | 12.69.402 | 本仓库 custom（`d5004ea`） | 外屏 1168×1712 | 4 格（首页/小团/购物车/我的）排布正常；点第 4 格进「我的」且选中态正确；点第 2 格进「小团」 |
++| 美团 | 12.69.402 | 本仓库 custom（`d5004ea`） | `wm size 1672x2364` 模拟内屏 | 宿主 1166×117 居中，4 格无溢出；真实内屏未展开复验 |
+ 
+ 复现/复核要点：
+ 

@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 11:00:17 +0800
+Subject: [PATCH 16/17] docs(meituan): record 12.69 four-slot bar and the fix
+
+---
+ fork/apps/meituan.md | 79 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 79 insertions(+)
+ create mode 100644 fork/apps/meituan.md
+
+diff --git a/fork/apps/meituan.md b/fork/apps/meituan.md
+new file mode 100644
+index 0000000..9caece1
+--- /dev/null
++++ b/fork/apps/meituan.md
+@@ -0,0 +1,79 @@
++# 美团（主 App）适配记录
++
++包名：`com.sankuai.meituan`（「美团外卖」是另一个包 `com.sankuai.meituan.takeoutnew`，适配在 `meituan/` 目录）
++
++## 已核对的结构
++
++### 12.66.404（上游 2.1.2 的验证版本）
++
++底栏 `TabBlockV2`（id `bottom_tab_block`）的直接子就是 5 个 tab slot：
++推荐、视频、小团、购物车、我的。模块按 `SLOT_COUNT = 5` 安装，槽位序号与角色序号一致。
++
++### 12.69.402（本机 2026-11-26）
++
++底栏多包了一层，并且**只剩 4 个 tab**（视频被美团撤掉）：
++
++```
++TabBlockV2  0,2220-1672,2364  #7f0a03df bottom_tab_block
++├─ View  0,36-1672,144                 背景
++├─ View  0,36-1672,37                  分割线
++└─ PTLinearLayout{c08da12 0,0-1672,144}   <-- 真正的行，4 个 slot
++   ├─ p0  0,36-418,144                   首页（内含 3 个 a1，其中 2 个 GONE，加一个 l 双图装饰）
++   ├─ h1  418,36-836,144                 小团（h1 包 a1）
++   ├─ a1  836,36-1254,144                购物车
++   └─ a1  1254,36-1672,144               我的
++```
++
++`a1` 仍是 tab 控件（`getIcon/getTitle/setSelected`），`TabBlockV2` 仍带 `bottom_tab_block`，
++所以结构锚点没变；变的是**行里只有 4 个槽**。
++
++## 症状与根因
++
++症状：底部玻璃栏只剩 3 个图标、位置偏移、点击错位，选中态不跟随。
++
++根因链：
++
++1. `MeituanMainAdapter.resolveNestedNavigation` / `estimateSlotCount` 返回常量 `SLOT_COUNT = 5`，
++   框架于是按 5 槽布局，而原生行只有 4 个 slot；
++2. 框架用 slot 序号画图、判定点击、解析选中，而 `MeituanMainNavigationState` 返回的是 **role**
++   （0..4）。5 槽时 role 与 slot 恰好同值，4 槽时整体错位，`PROFILE=4` 还会越界；
++3. `normalizeConfig` 把 `hiddenMask` 的 bit1 强制置位（默认为「隐藏视频」）。4 槽时 bit1 落在
++   slot1（小团）上，会误把真实 tab 隐藏；
++4. `MeituanMainStateArtwork` 用 role 作为静态图标切片的 key，`MeituanMainTabsRenderer` 用
++   `index == XIAOTUAN` 判断品牌图标 —— 两处都隐含「role == slot」。
++
++## 模块里的处理
++
++- `MeituanMainNativeTabs.cells(row)` 把**行里实际活动 slot 数**作为槽数；`resolveNestedNavigation`
++  与 `estimateSlotCount` 都改用它，安装日志会打 `installed … slots=4`。
++- `nativeSelected` 返回 `cells.indexOfFirst { isSelected }`（slot 序号）；`dispatchLive` 用
++  `cells.getOrNull(index)?.button`。点击映射与原生一致。
++- `MeituanMainStateArtwork` 的切片 key 改为 slot 序号，参考宽度改为 `width / cells.size`；
++  品牌槽位单独算出后传给渲染器，不再用 role 常量比较。
++- 新增共享钩子 `TargetAdapter.navigationHiddenMask(mask, slots)`：美团在槽数 ≠ 5 时清掉 bit1，
++  避免「视频位」误伤真实 tab。其它应用默认原样返回。
++
++## 验证（本机 2026-11-26）
++
++- 外屏 1168×1712：底栏 4 个图标（首页/小团/购物车/我的）均匀排布，无原生残影；
++- 点第 4 格进入「我的」页，选中态与该格一致；从「我的」点第 2 格进入「小团」页；
++- `wm size 1672x2364` 模拟内屏：宿主 253,2186 1166×117，4 格居中，无溢出；
++- 日志：`installed com.sankuai.meituan slots=4 source=DEDICATED`，
++  宿主 `[LiveBackdrop] host=177,1551 814x117`（外屏）。
++
++## 排查命令
++
++```bash
++logcat -d | grep -E "MeituanBinding|OfflineGlass.*sankuai"
++F=$(ls -t /data/adb/lspd/log/modules_*.log | head -1)
++grep -E "MeituanBinding|installed com.sankuai" "$F" | tail
++```
++
++`MeituanBinding: navigation row slots=N [s0-292=role0(首页),…]` 会打出每个 slot 的区间与角色，
++下次美团再改版时先看这一行。
++
++## 已知风险
++
++- 美团 tab 名称与数量由服务端下发，可能继续变化；槽数现在跟随原生，角色名称表仍需覆盖新名字
++  （当前：首页/推荐、视频、小团、购物车、我的）。
++- `a1` 的 `getTitle` 返回值若改成 `CharSequence`，`MeituanMainTabContract.matches` 会判失败并退回原生栏。

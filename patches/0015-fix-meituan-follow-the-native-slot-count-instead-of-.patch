@@ -1,0 +1,2811 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 10:41:13 +0800
+Subject: [PATCH 15/17] fix(meituan): follow the native slot count instead of a
+ fixed five
+
+Meituan 12.69.402 removed the video tab from the home bar: TabBlockV2 now
+wraps a PTLinearLayout with four tab slots, while the adapter still
+reported SLOT_COUNT=5. The framework then laid out five slots over four
+native cells, so selection, tap routing and the detached publish layout
+all indexed the wrong tab.
+
+The row's live cells are now the slot count, selection and taps use slot
+positions, the artwork bounds are keyed by slot, and a persisted mask bit
+for a slot the bar no longer has is dropped instead of hiding whatever
+tab moved into that position.
+---
+ .../offlineglass/hook/GlassHostLayout.kt      |   10 +-
+ .../hook/adapters/TargetAdapter.kt            | 1485 +++++++++--------
+ .../meituan_main/MeituanMainAdapter.kt        |  177 +-
+ .../meituan_main/MeituanMainNativeTabs.kt     |  289 ++--
+ .../MeituanMainNavigationState.kt             |  426 ++---
+ .../meituan_main/MeituanMainStateArtwork.kt   |  305 ++--
+ .../meituan_main/MeituanMainTabsRenderer.kt   |   12 +-
+ 7 files changed, 1371 insertions(+), 1333 deletions(-)
+
+diff --git a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+index 8ab792a..f08165d 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/GlassHostLayout.kt
+@@ -7831,11 +7831,19 @@ internal fun syncOpticalVisibilityCompanions() {
+ 
+         index in 0 until slotCount &&
+ 
+-            (config.hiddenMask and (1 shl index) != 0 || targetAdapter?.isNavigationEntryDisabled(index, slotCount) == true ||
++            (hiddenMaskForSlots() and (1 shl index) != 0 || targetAdapter?.isNavigationEntryDisabled(index, slotCount) == true ||
+                 appNavigationState?.isNavigationEntryAvailable(index) == false)
+ 
+ 
+ 
++    /** Adapters may re-map a persisted mask when the native row lost or gained a slot. */
++
++    private fun hiddenMaskForSlots(): Int =
++
++        targetAdapter?.navigationHiddenMask(config.hiddenMask, slotCount) ?: config.hiddenMask
++
++
++
+     private fun enabledNavigationIndices(): List<Int> =
+ 
+         (adapterBarLayout()?.navigationIndices ?: (0 until slotCount).toList()).filterNot(::isNavigationEntryDisabled)
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/TargetAdapter.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/TargetAdapter.kt
+index 4bd0f95..bb83454 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/TargetAdapter.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/TargetAdapter.kt
+@@ -1,741 +1,744 @@
+-package io.github.offlineglass.hook.adapters
+-
+-import android.app.Activity
+-import android.content.Context
+-import android.graphics.Canvas
+-import android.view.View
+-import android.view.ViewGroup
+-import android.widget.ImageView
+-import android.widget.TextView
+-import io.github.offlineglass.hook.compat.callbacks.XC_LoadPackage
+-import io.github.offlineglass.hook.adapters.amap.AmapAdapter
+-import io.github.offlineglass.hook.adapters.hellobike.HelloBikeAdapter
+-import io.github.offlineglass.hook.adapters.mi_community.MiCommunityAdapter
+-import io.github.offlineglass.hook.adapters.xhs.XhsAdapter
+-import io.github.offlineglass.hook.adapters.douyin.DouyinAdapter
+-import io.github.offlineglass.hook.adapters.bilibili_in.BilibiliInAdapter
+-import io.github.offlineglass.hook.adapters.bilibili.BilibiliAdapter
+-import io.github.offlineglass.hook.adapters.meituan.MeituanTakeoutAdapter
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainAdapter
+-import io.github.offlineglass.hook.adapters.mi_market.MiMarketAdapter
+-import io.github.offlineglass.hook.adapters.mi_file_manager.FileManagerAdapter
+-import io.github.offlineglass.hook.adapters.mi_health.MiHealthAdapter
+-import io.github.offlineglass.hook.adapters.mihome.MiHomeAdapter
+-import io.github.offlineglass.hook.adapters.netease.NeteaseAdapter
+-import io.github.offlineglass.hook.adapters.pdd.PddAdapter
+-import io.github.offlineglass.hook.adapters.taobao.TaobaoAdapter
+-import io.github.offlineglass.hook.adapters.tieba.TiebaAdapter
+-import io.github.offlineglass.hook.adapters.wechat.WeChatAdapter
+-import io.github.offlineglass.hook.adapters.weibo.WeiboAdapter
+-import io.github.offlineglass.hook.adapters.youtube.YouTubeAdapter
+-import io.github.offlineglass.hook.adapters.xianyu.XianyuAdapter
+-import io.github.offlineglass.hook.adapters.cainiao.CainiaoAdapter
+-import io.github.offlineglass.hook.adapters.jd.JdAdapter
+-import io.github.offlineglass.hook.adapters.qqmusic.QqMusicAdapter
+-import io.github.offlineglass.hook.adapters.spotify.SpotifyAdapter
+-import io.github.offlineglass.hook.adapters.apple_music.AppleMusicAdapter
+-import io.github.offlineglass.hook.adapters.xjtu.XjtuAdapter
+-import io.github.offlineglass.hook.adapters.chatgpt.ChatGptAdapter
+-import io.github.offlineglass.hook.adapters.x.XAdapter
+-import io.github.offlineglass.hook.adapters.instagram.InstagramAdapter
+-import io.github.offlineglass.hook.NavigationCandidate
+-import io.github.offlineglass.targets.TargetSpec
+-import io.github.offlineglass.targets.TargetSpecRegistry
+-import io.github.offlineglass.targets.HookSignal
+-import io.github.offlineglass.config.GlassConfig
+-
+-/** The app-owned part of discovery and lifecycle. Shared glass rendering stays in the host. */
+-internal interface TargetAdapter {
+-    /** Common CPU work reuse; no sampling/quality/cadence changes. */
+-    val reuseExactOpticalWork: Boolean get() = true
+-    /** Global accepted optical return: continuous background and complete resting handoff. */
+-    val completeIndicatorRestingHandoff: Boolean get() = true
+-    /** Optional application-owned compatibility setup before Application.attach. */
+-    fun installBootstrapHooks(param: XC_LoadPackage.LoadPackageParam) {}
+-    /** The target exposes a native English locale that the manager language may control. */
+-    val supportsNativeEnglishLocale: Boolean get() = false
+-    /** Run config-dependent early setup only after a verified startup snapshot. */
+-    fun onConfigurationReady(context: Context, param: XC_LoadPackage.LoadPackageParam) {}
+-    /** Legacy diagnostic opt-in; validated startup preferences are now shared by all targets. */
+-    val acceptsVersionedStartupPreferences: Boolean get() = false
+-    /** Opt-in experimental posture-driven optics; zero preserves existing rendering. */
+-    val tiltRefractionStrength: Float get() = io.github.offlineglass.rendering.PostureGlass.STRENGTH
+-    /** Shared Flowing Liquid policy; adapters only declare temporary exclusions. */
+-    val flowingLiquidEnabled: Boolean get() = true
+-    /** Accepted motion policy follows Flowing Liquid, including its exclusions. */
+-    val liquidMotionEnabled: Boolean get() = flowingLiquidEnabled
+-    val unifiedDropletPilot: Boolean get() = false
+-    val directionalRimPilot: Boolean get() = false
+-    val outerRefractionScale: Float get() = io.github.offlineglass.rendering.PostureGlass.REFRACTION_SCALE
+-    val tiltShadowStrength: Float get() = io.github.offlineglass.rendering.PostureGlass.SHADOW_STRENGTH
+-    fun barLayout(config: GlassConfig, width: Int, height: Int, density: Float, slots: Int): AdapterBarLayout? = null
+-    /** Adapter policy applied to drawing, optics and input through the same index mapping. */
+-    fun isNavigationEntryDisabled(index: Int, slots: Int): Boolean = false
+-    val key: String
+-    /** Opt-in: apply the outer dynamic-highlight setting in either theme. */
+-    val panelHighlightFollowsAllThemes: Boolean get() = false
+-    /** Opt-in for the main panel and its sampled copy, never the action or indicator rim. */
+-    val featheredInnerPanelHighlight: Boolean get() = true
+-    /** Exact contour-search pilot; unrelated to material/animation settings. */
+-    val useBoundedContourSearch: Boolean get() = false
+-    val ownsNavigationFinding: Boolean get() = false
+-    /** Recover when startup or home reconstruction replaces an already installed source. */
+-    val recheckNavigationBindingOnLayout: Boolean get() = false
+-
+-    /** Restore overlay ordering when the app appends home content after startup. */
+-    val keepNavigationOverlayOnTop: Boolean get() = false
+-    /** Null keeps the legacy generic detector; an app may explicitly opt out. */
+-    val nativeSelectionReliable: Boolean? get() = null
+-    /** Keep host traversal alive when a static page feeds a compositor surface. */
+-    fun needsContinuousOpticalSurfaceFrames(selectedIndex: Int): Boolean = false
+-    /** Native source artwork adjustments, owned by each app's adapter. */
+-    val sourceIconScale: Float? get() = null
+-    val sourceTextTranslationDp: Float? get() = null
+-    val sourceIconTranslationDp: Float? get() = null
+-    val sourceContentOffsetDp: Float get() = 0f
+-    /** Optional native source label size applied before glass projection. */
+-    val sourceTextSizeSp: Float? get() = null
+-    /** Optional scale used when projecting native artwork into the glass row. */
+-    val projectedNavigationScale: Float get() = 1f
+-    val ownsNavigationDrawing: Boolean get() = false
+-    /** Draw projected native artwork before the liquid indicator so the lens refracts it. */
+-    val navigationBehindIndicator: Boolean get() = false
+-    val ownsNavigationTap: Boolean get() = false
+-    /** Main-navigation-only cold scheduling; adapters exclude non-page accessories. */
+-    fun isFirstVisitPage(source: ViewGroup, index: Int, slots: Int): Boolean = true
+-    /** Compound accessories may maintain their sibling order as one group. */
+-    val managesHostSiblingOrder: Boolean get() = false
+-    val commitSelectionAfterTap: Boolean get() = false
+-    val skipNavigationSnapshot: Boolean get() = false
+-    val stagedNavigationSnapshot: Boolean get() = false
+-    val ownsNavigationSnapshotCapturePolicy: Boolean get() = false
+-    val supportsScheduledNavigationSnapshotRefresh: Boolean get() = false
+-    val navigationSnapshotStableFrames: Int? get() = null
+-    val navigationSignatureMaxDepth: Int get() = 5
+-    val redrawSurfaceAfterNavigationCapture: Boolean get() = false
+-    val usesCommittedSelection: Boolean get() = false
+-    val usesContentDarkMode: Boolean get() = false
+-    val forceLightMode: Boolean get() = false
+-    val ownsHostNativeChrome: Boolean get() = false
+-    /** Some adapters use a native source as a visible content host (e.g. mini-player pages). */
+-    val keepNavigationSourceVisible: Boolean get() = false
+-    val hostLiftDp: Float? get() = null
+-    /** Optional width reference; actual tab count and hit slots stay unchanged. */
+-    fun hostWidthSlotCount(slots: Int, config: GlassConfig): Int = slots
+-    /** Optional compound width built from the standard tab-row widths. */
+-    fun compactHostWidth(
+-        config: GlassConfig, density: Float, height: Int, tabRowWidth: (Int) -> Int,
+-    ): Int? = null
+-    val hasPerFrameScene: Boolean get() = false
+-    /** Null keeps the normal immersive fitting; an app may pin its own navigation inset. */
+-    val navigationImmersionOverride: Boolean? get() = null
+-    /** Reapply the saved non-immersive state if an app rewrites window flags after launch. */
+-    val repeatImmersionRestoreWhileInactive: Boolean get() = false
+-    val suppressPlatformElevation: Boolean get() = false
+-    val contentAncestorMaxDepth: Int? get() = null
+-    val sourceParentVisibilityOnly: Boolean get() = false
+-    val sourceSwapGraceMs: Long get() = 0L
+-    val panelShadowBlurDp: Float? get() = null
+-    /** Local panel shadow opacity; leaves glass tint and scene content unchanged. */
+-    val panelShadowAlphaScale: Float get() = 1f
+-    val synchronousConfigPolling: Boolean get() = false
+-    val nativeNavigationDrawsInSourceSpace: Boolean get() = false
+-    val indicatorInnerShadow: Boolean get() = false
+-    val continuousIndicatorMask: Boolean get() = true
+-    /** Scale only the slider's border inset; tab hit slots and panel geometry stay shared. */
+-    val indicatorInsetScale: Float get() = 1f
+-    /** Opt-in pilot: bounded vertical finger follow on the primary bar only. */
+-    val indicatorDragVerticalLimitDp: Float get() = 0f
+-    /** Optional local tint gain; default preserves the shared resting material. */
+-    fun restingIndicatorTintScale(config: io.github.offlineglass.config.GlassConfig): Float = 1f
+-    /** Shared slider curve; the visible outer panel is unchanged. */
+-    val indicatorCornerSmoothing: Float? get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.CURVE
+-    val themeProbeIntervalMs: Long? get() = null
+-    val allowRenderNodeRefresh: Boolean get() = false
+-    /** Reuse the cached optical blur node instead of rebuilding it during page transitions. */
+-    val reuseOpticalBlur: Boolean get() = false
+-    /** Retained live RenderNode dependencies update without rebuilding the blur wrapper. */
+-    val retainsLiveOpticalBlur: Boolean get() = false
+-    /** Keep optical input available while native page-navigation work is prioritized. */
+-    val keepsBackdropDuringTapTransition: Boolean get() = false
+-    /** Keep capture invalidation active while a live backdrop listener is attached. */
+-    val captureDuringLiveBackdrop: Boolean get() = true
+-    /** Native source is retained for clicks only; the glass host owns visible rendering. */
+-    val hideRedrawnNavigationSource: Boolean get() = false
+-    /** Optional source projection rules for app-specific centre actions. */
+-    val sourceCenterActionIndex: Int? get() = null
+-    val sourceDefaultTranslationDp: Float get() = 0f
+-    val sourceCenterTranslationDp: Float get() = 0f
+-    val sourceCenterClipRatio: Float get() = 1f
+-    val preserveNativeColorIndices: Set<Int> get() = emptySet()
+-    /** Delay before a scroll-idle page hides the glass bar. */
+-    fun scrollStopHideDelayMs(selectedIndex: Int): Long = 1_000L
+-    /** Some native rows need a short settle window after dispatching a click. */
+-    val selectionSettleMs: Long get() = 0L
+-    /** App-owned scroll-stop-hide tab; the scroll listener itself is shared. */
+-    fun scrollStopHideTab(selectedIndex: Int): Boolean = false
+-    fun resetScrollStopHideOnOtherTabs(): Boolean = false
+-    fun isBackPeekTab(selectedIndex: Int): Boolean = false
+-    fun isBackPeekActivity(activity: Activity): Boolean = false
+-    val backPeekDurationMs: Long get() = 0L
+-    val sceneVisibilityAnimation: Boolean
+-        get() = TargetSpecRegistry.byKey[key]?.sceneVisibilityAnimation == true
+-    val drawsNavigationInOptics: Boolean
+-        get() = TargetSpecRegistry.byKey[key]?.drawsNavigationInOptics == true
+-    val suppressSourceOnHostRebind: Boolean get() = false
+-    val snapIndicatorToSelectionOnRebind: Boolean get() = false
+-    val refreshHostGeometryOnRebind: Boolean get() = false
+-    val accentColor: Int? get() = TargetSpecRegistry.byKey[key]?.glassAccentColor
+-    val reverseVisualSlotOrder: Boolean get() = false
+-    val actionOnlyIndices: Set<Int> get() = emptySet()
+-    /** Live native routing may replace the scene while a bar gesture is animating. */
+-    val updatesSceneDuringTapTransition: Boolean get() = false
+-    val floatingPillUsesSharedInsets: Boolean get() = false
+-    val preserveNativeParentBackground: Boolean get() = false
+-    val preserveNativeSourceMetrics: Boolean get() = false
+-    /** The adapter owns reversible source suppression and leaves native layout intact. */
+-    val managesNavigationSourceAppearance: Boolean get() = false
+-    val foregroundNavigationOverSelection: Boolean get() = false
+-    val usesNavigationOpticalMix: Boolean get() = false
+-    val persistentNavigationOpticalMix: Boolean get() = false
+-    val foregroundUsesRenderedSelectionOutline: Boolean get() = false
+-    val foregroundRequiresSubmittedIndicatorArtwork: Boolean get() = false
+-    val usesDetachedDirectSelectionFill: Boolean get() = false
+-    val defersColdTapUntilMotionSettles: Boolean get() = true
+-    /** Whether the shared tap inset outline can replace the adapter's existing selection geometry. */
+-    val supportsInsetTapOutline: Boolean get() = true
+-    /** Keep the inset base outline under the existing drag transform. */
+-    /** Keep artwork in the foreground when using the inset tap contour. */
+-    val insetTapArtworkForegroundOnly: Boolean get() = false
+-    val foregroundMaskInsetDp: Float get() = 1f
+-    /** Include the lower glass panel's own specular in the upper selection lens. */
+-    val samplesPanelHighlightInIndicator: Boolean get() = true
+-    /** Record animated sampled specular separately from the reusable material scene. */
+-    val independentSampledIndicatorHighlight: Boolean get() = false
+-    val pressedIndicatorScale: Float? get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.PRESS_SCALE
+-    /** Default-on expansion is unchanged for bottom navigation and ordinary controls. */
+-    val indicatorInteractionPolicy: io.github.offlineglass.rendering.IndicatorInteractionPolicy
+-        get() = io.github.offlineglass.rendering.IndicatorInteractionPolicy.EXPANDING
+-    val concentricIndicatorExpansion: Boolean get() = true
+-    val concentricIndicatorExpansionGain: Float get() = 1.6f
+-    val activeIndicatorDispersion: Float get() = 0.40f
+-    /** Whole-button feedback; null preserves the navigation panel's width-derived growth. */
+-    val outerPanelPressScale: Float? get() = null
+-    val sampledPanelHighlightWidthDp: Float get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.SPECULAR_WIDTH_DP
+-    val sampledPanelHighlightMinimumAlpha: Float get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.SPECULAR_MIN_ALPHA
+-    val requestedFrameRateMax: Float? get() = null
+-    val continuousFramePump: Boolean get() = false
+-    val observeWindowTouches: Boolean get() = false
+-    fun onWindowTouch(host: View, event: android.view.MotionEvent) = Unit
+-    val opticalIconBandScale: Float get() = 1f
+-    val secondaryBlurScale: Float get() = 1f
+-    fun backdropBlurEffect(radius: Float): android.graphics.RenderEffect =
+-        io.github.offlineglass.rendering.NativeBackdropBlur.effect(radius)
+-    fun liveBackdropTransform(parent: View, host: View, out: android.graphics.Matrix): Boolean = false
+-    val skipBackdropStableDelay: Boolean get() = false
+-    val forceCompositorFrames: Boolean get() = false
+-    val disablePlatformForceDark: Boolean get() = false
+-    val liveBackdropFramePump: Boolean get() = false
+-    val refreshOpticsOnBarShow: Boolean get() = false
+-    val releaseOutlineClipping: Boolean get() = false
+-    fun hiddenBarTranslationPx(hostHeight: Int, density: Float): Float? = null
+-    /** Explicit scene direction; null preserves every existing animation scheme. */
+-    fun sceneExitTranslationPx(hostHeight: Int, density: Float): Float? = null
+-    /** YouTube-style translation/alpha only, without spring scale/overshoot. */
+-    val simpleSceneVisibilityAnimation: Boolean get() = false
+-    /** Shared low-power Surface/PixelCopy engine; page selection remains app-owned. */
+-    val usesOpticalSurfacePipeline: Boolean get() = false
+-    val keepsOpticalSurfaceDuringBarAnimation: Boolean get() = false
+-    val retainsOpticalSurfaceWhenBarHidden: Boolean get() = false
+-    val opticalSurfaceFollowsBarTransform: Boolean get() = true
+-    val usesDirectOpticalBackdropMode: Boolean get() = false
+-    val usesNativeOpticalBlur: Boolean get() = false
+-    val ownsOpticalSurfaceLayout: Boolean get() = false
+-    /** Adapter positions its host; slot/config updates must not apply bottom-bar geometry. */
+-    val ownsHostLayout: Boolean get() = false
+-    /** Transparent optical buffer margin, including animated ambient shadows. */
+-    val opticalSurfaceOverflowDp: Float get() = 32f
+-    /** Defer sibling removal until the parent finishes its detach traversal. */
+-    val deferCompanionRemovalOnDetach: Boolean get() = false
+-    fun opticalSurfaceLayout(
+-        contentWidth: Int, contentHeight: Int, hostLeft: Int, hostTop: Int,
+-        hostWidth: Int, hostHeight: Int, overflow: Int,
+-    ): OpticalSurfaceLayout? = null
+-    val allowsSystemBackgroundBlur: Boolean get() = true
+-    val countsOpticalCompositorCopies: Boolean get() = false
+-    val deferOpticalRenderDuringBarAnimation: Boolean get() = false
+-    val reuseSurfaceBlurDuringBarAnimation: Boolean get() = false
+-    val usesContentAlignedOpticalSurface: Boolean get() = false
+-    val retainsExistingBackdropRenderNode: Boolean get() = false
+-    fun isOpticalSurfaceTab(selectedIndex: Int): Boolean = false
+-    val restingOpticalMix: Float? get() = null
+-    val logNavigationHierarchy: Boolean get() = false
+-    val clearSourceSelectionSurfaces: Boolean get() = false
+-    val trackSourceDrawableIdentity: Boolean get() = false
+-    /** Some native ImageViews draw their icon from background instead of src. */
+-    val trackSourceImageBackgroundIdentity: Boolean get() = false
+-    val managesNativeTabVisibility: Boolean get() = false
+-    val honorsBackdropCaptureSetting: Boolean get() = false
+-    fun normalizeConfig(config: GlassConfig): GlassConfig = config
+-    fun hostBottomMarginPx(view: View, defaultGap: Int): Int = defaultGap
+-    fun opticalCaptureGeometry(
+-        rootWidth: Int, rootHeight: Int, left: Int, top: Int, width: Int, height: Int, padding: Int,
+-    ): OpticalCaptureGeometry? = null
+-    fun createNavigationState(context: Context): AppNavigationState? = null
+-    fun createNavigationState(context: Context, host: io.github.offlineglass.hook.GlassHostLayout): AppNavigationState? =
+-        createNavigationState(context)
+-    fun createNativeChromeController(): AppNativeChromeController? = null
+-    fun screenReferenceHeight(rootHeight: Int?, displayHeight: Int): Int? = null
+-    fun drawNavigation(canvas: Canvas, frame: AdapterNavigationFrame) = Unit
+-    val hasTransientPageVisibility: Boolean get() = false
+-    /** Beta build policy: keep the bottom bar on the app home screen only. */
+-    val homeOnlyNavigation: Boolean get() = false
+-    fun navigationSurfaceColor(activity: Activity?, source: View?, dark: Boolean): Int? = null
+-    /** Visible glass fill, also used in the indicator's captured navigation row. */
+-    /** Opt-in factor after the shared global surface opacity. */
+-    fun surfaceOpacityScale(config: GlassConfig): Float = 1f
+-    fun glassSurfaceFillColor(dark: Boolean, selectedIndex: Int, defaultColor: Int): Int = defaultColor
+-    fun glassSurfaceFillBlendMode(dark: Boolean): android.graphics.BlendMode? = null
+-    fun dispatchNavigationTap(source: ViewGroup?, index: Int, slotCount: Int): Boolean = false
+-    fun configureNavigationInsets(decor: View, enabled: Boolean) = Unit
+-    fun immersionWasReset(immersiveStub: Any?): Boolean = false
+-    fun pushedConfig(): GlassConfig? = null
+-    fun acceptPushedConfig(config: GlassConfig): Boolean = false
+-    fun findNavigation(root: View, spec: TargetSpec): NavigationCandidate? = null
+-    fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? = null
+-    fun adjustNavigationScore(view: ViewGroup, idName: String?, score: Int): Int = score
+-    fun onNavigationCandidates(candidates: List<NavigationCandidate>) = Unit
+-    fun suppressNativeBottomChrome(navigation: ViewGroup) = Unit
+-    /** Host-aware variant for adapters that must exclude the glass host subtree from tree walks. */
+-    fun suppressNativeBottomChrome(host: View, navigation: ViewGroup) =
+-        suppressNativeBottomChrome(navigation)
+-    fun suppressNativeBottomChromeOnRebind(navigation: ViewGroup) = Unit
+-    fun prepareContentForInstall(content: ViewGroup) = Unit
+-    fun prepareNavigationSource(navigation: ViewGroup, density: Float) = Unit
+-    /** Return true when the adapter fully configured this source label. */
+-    fun configureSourceText(view: TextView, config: GlassConfig, density: Float): Boolean = false
+-    /** Return true when the adapter fully configured this source icon. */
+-    fun configureSourceIcon(view: ImageView, config: GlassConfig, density: Float): Boolean = false
+-    fun resolveNestedNavigation(navigation: ViewGroup): Pair<ViewGroup, Int>? = null
+-    fun acceptsNavigationSource(navigation: ViewGroup): Boolean = true
+-    fun hookSignals(): List<TargetHookSignal> = emptyList()
+-    fun installHooks(lpparam: XC_LoadPackage.LoadPackageParam, spec: TargetSpec) = Unit
+-    fun beforeNavigationScan(activity: Activity) = Unit
+-    fun isBlockingOverlayActivity(activity: Activity): Boolean = false
+-    fun setBlockingOverlayVisible(visible: Boolean) = Unit
+-    fun isBlockingOverlayVisible(): Boolean = false
+-}
+-
+-internal typealias TargetHookSignal = HookSignal
+-
+-/** Adapter-owned overlay excluded from generic sampling and traversal. */
+-internal interface AdapterOwnedOverlay
+-
+-/** Generic compound panel geometry, supplied exclusively by the app adapter. */
+-internal data class AdapterBarLayout(
+-    val mainWidth: Float,
+-    val actionLeft: Float,
+-    val actionSize: Float,
+-    val actionIndex: Int,
+-    val navigationIndices: List<Int>,
+-    /** Optional action material, replacing the default light/dark panel fill. */
+-    val actionFillColor: Int? = null,
+-    /** Evaluate a detached lens in local coordinates with its own filtered input bounds. */
+-    val localActionOptics: Boolean = false,
+-    /** Opt-in: main capsule owns a separate local lens, never a compound SDF. */
+-    val localMainOptics: Boolean = false,
+-    /** Strength of the detached action's liquid highlight relative to the panel default. */
+-    val actionHighlightScale: Float = 1f,
+-    /** Keep the supplied RGB and use the surface slider, including in solid bar mode. */
+-    val actionFillUsesOnlySurfaceOpacity: Boolean = false,
+-)
+-
+-internal data class AdapterNavigationFrame(
+-    val context: Context,
+-    val extraScale: Float,
+-    val slotCount: Int,
+-    val width: Int,
+-    val height: Int,
+-    val slotWidth: Float,
+-    val density: Float,
+-    val iconScale: Float,
+-    val textSize: Float,
+-    val scaledDensity: Float,
+-    val selectedIndex: Int,
+-    val enabledIndices: List<Int>,
+-    val iconOnly: Boolean,
+-    val darkGlass: Boolean,
+-    val accentColor: Int,
+-    val barLayout: AdapterBarLayout? = null,
+-    val navigationOpticalMix: Float = 0f,
+-    val hideSelectedForOptics: Boolean = false,
+-    val targetKey: String = "",
+-    val managerEnglishLabels: Boolean = false,
+-    val detachedDirectSelection: Boolean = false,
+-    val topBarTabs: io.github.offlineglass.hook.topbar.TopBarTabLayout? = null,
+-) {
+-    fun channelCenter(index: Int): Float =
+-        topBarTabs?.takeIf { index in 0 until it.size }?.center(index, width, 4f * density)
+-            ?: 4f * density + (index + .5f) * slotWidth
+-    fun channelEdge(index: Int): Float =
+-        topBarTabs?.takeIf { index in 0..it.size }?.edge(index, width, 4f * density)
+-            ?: 4f * density + index * slotWidth
+-}
+-
+-internal fun AdapterNavigationFrame.localizeNavigationLabel(label: String): String =
+-    if (managerEnglishLabels) NavigationLabelLocalization.toEnglish(targetKey, label) else label
+-
+-/** A verified scene node, positioned in physical screen coordinates. */
+-internal data class RetainedNavigationBackdrop(val node: android.graphics.RenderNode, val toScreen: android.graphics.Matrix)
+-
+-internal data class AppVideoBackdrop(
+-    val bitmap: android.graphics.Bitmap,
+-    val surfaceLeft: Int,
+-    val surfaceTop: Int,
+-    val surfaceWidth: Int,
+-    val surfaceHeight: Int,
+-    val epoch: Int,
+-)
+-
+-/** Per-host mutable navigation resources owned by one app, not the shared glass renderer. */
+-internal data class NavigationCaptureLabels(
+-    val labels: List<TextView>,
+-    val retryDelayMs: Long = 0L,
+-)
+-
+-internal data class OpticalCaptureGeometry(
+-    val sourceRect: android.graphics.Rect,
+-    val targetWidth: Int,
+-    val targetHeight: Int,
+-    val barSource: android.graphics.Rect,
+-)
+-
+-internal data class OpticalSurfaceLayout(
+-    val width: Int, val height: Int, val left: Int, val top: Int,
+-    val right: Int, val bottom: Int, val gravity: Int,
+-)
+-
+-internal interface AppNavigationState {
+-    /** Dynamic capability shared by projection, hit testing and selection. */
+-    fun isNavigationEntryAvailable(index: Int): Boolean? = null
+-    /** Optional animated indicator center/width; null keeps normal slot geometry. */
+-    fun indicatorHorizontalGeometry(center: Float, width: Float): Pair<Float, Float>? = null
+-    /** Map physical touch coordinates into the host's uniform slot coordinate space. */
+-    fun uniformSlotTouchX(x: Float, hostWidth: Int, padding: Float): Float = x
+-    /** Optional detached action feedback; zero preserves existing adapters. */
+-    fun actionButtonPressProgress(): Float = 0f
+-    /** Animated panel width; default retains the common layout. */
+-    fun hostPanelWidth(defaultWidth: Int): Int = defaultWidth
+-    /** Opt-in measured geometry; keeps optics and input in the panel's real coordinates. */
+-    fun hostPanelHeight(defaultHeight: Int): Int = defaultHeight
+-    /** Null uses normal navigation gestures; true/false owns this event's dispatch. */
+-    fun interceptNavigationTouch(host: View, event: android.view.MotionEvent): Boolean? = null
+-    /** Some native scenes contain GPU-only assets and cannot be drawn to a Bitmap Canvas. */
+-    val allowsSoftwareBackdropCapture: Boolean get() = true
+-    /** A new native page/content revision must not reuse a previous-page software input. */
+-    fun needsFreshSoftwareBackdrop(): Boolean = false
+-    fun onSoftwareBackdropRecorded() = Unit
+-    /** Lightweight adapter-owned work that runs from the shared pre-draw cadence. */
+-    fun onHostFrame(host: View) = Unit
+-    /** Default null: persistent first-visit pictures are an adapter-only experiment. */
+-    fun firstVisitPresentation(host: View): io.github.offlineglass.rendering.FirstVisitPresentation? = null
+-    fun onContentScroll() = Unit
+-    fun onNavigationTabSwitched(index: Int, slotCount: Int, now: Long) = Unit
+-    fun contentMotionHoldUntil(): Long = 0L
+-    fun onNavigationSelectionRequested(index: Int, slotCount: Int, now: Long): Boolean = false
+-    fun acceptNativeNavigationSelection(index: Int, now: Long): Boolean? = null
+-    fun followingNativeNavigationAnimation(now: Long): Boolean = false
+-    fun pendingNativeNavigationTarget(now: Long): Int? = null
+-    val readyForDrawing: Boolean get() = true
+-    val blocksBackdropSampling: Boolean get() = false
+-    fun prepare(source: ViewGroup?, schedule: (Long, () -> Unit) -> Unit) = Unit
+-    fun captureNavigation(source: ViewGroup, target: android.graphics.Bitmap): Boolean = false
+-    fun acceptCapturedNavigation(source: ViewGroup?, target: android.graphics.Bitmap, selectedIndex: Int): Boolean = true
+-    fun acceptAndCommitNavigationSnapshot(
+-        source: ViewGroup?, target: android.graphics.Bitmap, selectedIndex: Int, slotCount: Int,
+-        commit: (android.graphics.Bitmap) -> Unit,
+-    ): Boolean? = null
+-    fun inspectNavigationCaptureLabels(source: ViewGroup, hasSnapshot: Boolean): NavigationCaptureLabels? = null
+-    fun temporarilyHideNavigationLabels(labels: List<TextView>, selectedIndex: Int): List<Pair<TextView, Int>> = emptyList()
+-    /** Null uses the shared snapshot cadence; true skips this frame's capture. */
+-    fun skipNavigationSnapshotCapture(
+-        source: ViewGroup, snapshot: android.graphics.Bitmap?, touching: Boolean,
+-        visualAnimating: Boolean, slotCount: Int, now: Long,
+-    ): Boolean? = null
+-    fun replaceCapturedVideoSlot(target: android.graphics.Bitmap) = Unit
+-    fun drawFixedNavigationSlot(canvas: Canvas, index: Int, selectedIndex: Int, dark: Boolean,
+-                                centerX: Float, centerY: Float, boxSize: Float): Boolean = false
+-    fun sourceContentOffsetY(index: Int, selectedIndex: Int, hostHeight: Int,
+-                             transformDy: Float, transformScale: Float): Float? = null
+-    fun drawAppBadgeOverlay(canvas: Canvas, host: View, contentScale: Float) = Unit
+-    /** App-owned snapshot crop/repaint stages for native tab artwork. */
+-    fun transformNavigationSnapshot(source: ViewGroup, snapshot: android.graphics.Bitmap, slotCount: Int): android.graphics.Bitmap? = null
+-    fun onNavigationSnapshotReady(snapshot: android.graphics.Bitmap, slotCount: Int) = Unit
+-    fun drawNavigationSnapshotOverlay(canvas: Canvas, frame: AdapterNavigationFrame,
+-                                      snapshot: android.graphics.Bitmap?) = Unit
+-    /** Whether the current app mode needs a sampled copy of content behind the bar. */
+-    fun requiresSampledBackdrop(): Boolean = true
+-    /** Refract adapter-owned navigation artwork even when the page owns its own compositor. */
+-    val usesArtworkOnlyIndicatorLens: Boolean get() = false
+-    fun needsSurfaceBackdrop(): Boolean = false
+-    fun maintainsCompositorSamplingWithoutSurface(): Boolean = false
+-    /** Desired renderer mode, independent of asynchronous Surface lifecycle. */
+-    fun allowsOpticalSurfacePipeline(): Boolean = true
+-    /** Window-strip capture needs a transparent output surface before its first frame. */
+-    fun preparesOpticalSurfaceForWindowCapture(): Boolean = false
+-    /** Reject readbacks requested for a scene that has since been replaced. */
+-    fun opticalCaptureEpoch(): Long = 0L
+-    /** Optional app-owned worker for PixelCopy callbacks; null keeps the shared worker. */
+-    fun opticalSurfaceCopyHandler(): android.os.Handler? = null
+-    /** Optional adapter-owned ordering of readback relative to app frame submission. */
+-    fun scheduleOpticalSurfaceCopy(root: View, copy: () -> Unit): Boolean = false
+-    fun onOpticalSurfaceCopyCompleted(root: View, nextCopy: () -> Unit) = Unit
+-    /** Reuse the retired buffer for the next copy while the published frame renders. */
+-    fun overlapsOpticalCopyAndRender(): Boolean = false
+-    /** Coalesce new samples with native navigation drawing on the UI frame. */
+-    fun deferOpticalCopyRenderToUi(): Boolean = false
+-    fun directOpticalBackdropActive(): Boolean = false
+-    fun opticalSurfaceVisibleDuringTransition(hostVisibility: Int, hostAlpha: Float): Boolean? = null
+-    fun enterDirectOpticalBackdrop(surface: android.view.SurfaceView, pipelineActive: Boolean): Boolean = false
+-    fun onOpticalSurfaceFrameInvalidated() = Unit
+-    fun onOpticalSurfacePipelineEnabled(wasActive: Boolean) = Unit
+-    fun onOpticalBackdropCaptured(barSource: android.graphics.Rect?) = Unit
+-    /** A changed sampled image can indicate movement without a View scroll event. */
+-    fun onOpticalBackdropChanged() = Unit
+-    fun onOpticalSurfaceFrameRendered(): Boolean = false
+-    fun onOpticalRendererConfigurationChanged() = Unit
+-    fun holdDirectBackdropUntilOpticalFrame(liveBackdropActive: Boolean, hasDisplayList: Boolean): Boolean = false
+-    fun shouldQueueOpticalRenderFromUi(animating: Boolean): Boolean? = null
+-    fun queueOpticalSurfaceRender(
+-        handler: android.os.Handler?, active: () -> Boolean, render: () -> Unit,
+-    ): Boolean = false
+-    fun syncNativeSurfaceOuterEffect(
+-        view: View, liquidGlassEnabled: Boolean, width: Int, height: Int, blurRadius: Float,
+-        cornerRadiusPercent: Float, density: Float, shaderFactory: () -> android.graphics.RuntimeShader?,
+-    ): Boolean = false
+-    fun retainBackdropDuringTransition(now: Long): Boolean = false
+-    fun retainHomeBackdrop(selectedIndex: Int): Boolean = false
+-    fun deferThemeDetection(now: Long): Boolean = false
+-    fun needsContinuousHomeFrames(selectedIndex: Int): Boolean = false
+-    fun pageRequiresScrollStopHide(selectedIndex: Int): Boolean = false
+-    fun retainNavigationWhenNativeRowHidden(selectedIndex: Int): Boolean = false
+-    fun retainNavigationWithoutNativeSource(selectedIndex: Int): Boolean =
+-        retainNavigationWhenNativeRowHidden(selectedIndex)
+-    fun onBarGesture(phase: Int, host: View) = Unit
+-    fun suppressNativeChrome(source: ViewGroup?) = Unit
+-    fun suppressNativeChromeEarly(source: ViewGroup?) = Unit
+-    fun suppressHostNativeChrome(source: ViewGroup?, root: View, selected: Int) = Unit
+-    fun drawNativeNavigation(canvas: Canvas, source: ViewGroup, density: Float): Boolean = false
+-    /** Distinguish lens input artwork from the ordinary foreground projection. */
+-    fun drawNativeNavigation(canvas: Canvas, source: ViewGroup, density: Float, forOptics: Boolean): Boolean =
+-        drawNativeNavigation(canvas, source, density)
+-    fun onHostPreDraw(
+-        host: View, source: ViewGroup?, selected: () -> Int,
+-        enabled: Boolean, density: Float,
+-        barHeightPx: Int,
+-        surfaceColor: () -> Int,
+-    ) = Unit
+-    /** Return true when an app configured its own compositor/backdrop transition policy. */
+-    fun updateBackdropRendererMode(host: io.github.offlineglass.hook.GlassHostLayout): Boolean = false
+-    fun onHostFocusLost() = Unit
+-    fun onHostWindowFocusChanged(hasFocus: Boolean) = Unit
+-    fun onHostDetached() = Unit
+-    fun onHostPreDrawDuringTapTransition(host: View) = Unit
+-    fun syncVisibilityCompanion(host: View, selectedIndex: Int): Boolean = false
+-    fun beforeHostDraw(host: View, source: ViewGroup?): Boolean = true
+-    fun hostChromeAlpha(host: View, selectedIndex: Int): Float = 1f
+-    fun drawAdditionalAmbientShadow(canvas: Canvas, dark: Boolean, alphaScale: Float) = Unit
+-    fun drawsPanelAmbientShadow(): Boolean = true
+-    fun drawPanelEdgeGlow(canvas: Canvas, path: android.graphics.Path, density: Float) = Unit
+-    fun drawSampledBackdrop(canvas: Canvas, bitmap: android.graphics.Bitmap,
+-                            destination: android.graphics.RectF, paint: android.graphics.Paint): Boolean = false
+-    fun reuseOuterBackdropForSurface(surfaceActive: Boolean): Boolean = false
+-    fun outerBackdropNeedsRecord(
+-        backdrop: android.graphics.Bitmap?, width: Int, height: Int, hasDisplayList: Boolean,
+-    ): Boolean? = null
+-    fun onOuterBackdropRecorded(backdrop: android.graphics.Bitmap?, width: Int, height: Int) = Unit
+-    fun reuseCombinedIndicatorScene(surfaceActive: Boolean): Boolean = false
+-    /** Reuse captured indicator inputs while animating only their release opacity. */
+-    val retainsIndicatorReturnLayers: Boolean get() = false
+-    fun combinedIndicatorSceneNeedsRecord(
+-        backdrop: android.graphics.Bitmap?, navigation: android.graphics.Bitmap?, signature: Long,
+-        width: Int, height: Int, dark: Boolean, hasDisplayList: Boolean,
+-    ): Boolean? = null
+-    fun onCombinedIndicatorSceneRecorded(
+-        backdrop: android.graphics.Bitmap?, navigation: android.graphics.Bitmap?, signature: Long,
+-        width: Int, height: Int, dark: Boolean,
+-    ) = Unit
+-    fun drawHiddenTabsInIndicatorScene(hybridBackdrop: Boolean): Boolean? = null
+-    /** Compose the lens from this frame's rendered panel, retaining navigation artwork. */
+-    fun indicatorUsesPanelBackdrop(): Boolean = true
+-    /** Retain resting material independently of backdrop transitions; gestures stay clear. */
+-    val persistentRestingIndicatorFill: Boolean get() = true
+-    /** Keep material only inside the hidden optical row during indicator gestures. */
+-    val retainHiddenSourceFillWhileExpanded: Boolean get() = true
+-    fun includeNavigationInIndicatorScene(surfaceActive: Boolean): Boolean? = null
+-    fun opticalBlurNodeNeedsRecord(
+-        prepared: Boolean, backdrop: android.graphics.Bitmap?, width: Int, height: Int,
+-        effect: android.graphics.RenderEffect?,
+-    ): Boolean? = null
+-    fun onOpticalBlurNodeRecorded(
+-        backdrop: android.graphics.Bitmap?, width: Int, height: Int,
+-        effect: android.graphics.RenderEffect?,
+-    ) = Unit
+-    fun skipLiveBackdrop(selectedIndex: Int): Boolean = false
+-    fun canReuseLiveBackdrop(selectedIndex: Int): Boolean = false
+-    /** Refresh retained GPU wrappers when a texture producer supplies a new frame. */
+-    fun forceLiveBackdropFrame(selectedIndex: Int): Boolean = false
+-    fun onLiveBackdropRecorded(selectedIndex: Int) = Unit
+-    fun beginOverlayTouch(host: View, event: android.view.MotionEvent): Boolean = false
+-    fun hasActiveOverlayTouch(): Boolean = false
+-    fun forwardOverlayTouch(host: View, event: android.view.MotionEvent) = Unit
+-    fun clearOverlayTouch() = Unit
+-    fun navigationBarGeometry(): android.graphics.RectF? = null
+-    fun allowsHostTouch(): Boolean = true
+-    fun setNativeBarTouchable(view: View?, touchable: Boolean): Boolean = false
+-    fun onHostTouchDown(host: View, selectedIndex: Int) = Unit
+-    /** Keep non-panel scene work out of an app-owned exit animation when required. */
+-    val pauseBackdropDuringBarExit: Boolean get() = false
+-    /** Keep page/lifecycle tracking active while an invisible panel needs no sampling. */
+-    fun pauseBackdropWork(host: View): Boolean = false
+-    /** The focused native window of a control whose material is drawn in its parent window. */
+-    fun focusedOpticalWindow(host: View): View? = null
+-    /** Pause only optical readback/probe wakeups while retaining a hidden Surface. */
+-    fun pauseOpticalSurfaceProbe(): Boolean = false
+-    fun drawsNavigationContent(): Boolean = true
+-    /** Per-host opt-out for optional artwork modes; default preserves adapters. */
+-
+-    fun navigationOpticalMixEnabled(): Boolean = true
+-
+-    /** Page-owned tint animation, independent of artwork and optical strength. */
+-    fun surfaceTintFraction(): Float = 1f
+-    fun drawsSelectionFillOnly(): Boolean = false
+-    fun selectionOpticalFraction(): Float = 1f
+-    /** Restrict sampled artwork to the same footprint excluded from foreground artwork. */
+-    fun clipsSampledNavigationToIndicator(): Boolean = false
+-    fun suppressRedrawnSource(): Boolean? = null
+-    fun forceDarkMode(selectedIndex: Int): Boolean? = null
+-    fun resolveAutoDarkMode(host: View): Boolean? = null
+-    fun resolveBackdropScene(host: View): View? = null
+-    val suppliesRetainedNavigationBackdrop: Boolean get() = false
+-    fun retainedNavigationBackdrop(): RetainedNavigationBackdrop? = null
+-    /** Opt in to a filtered descendant list inside resolveBackdropScene's root. */
+-    val backdropSceneViewsAreDescendants: Boolean get() = false
+-    /** Optional safe subtrees; ancestor nodes containing media surfaces must not be replayed. */
+-    fun backdropSceneViews(content: ViewGroup, hostIndex: Int): List<View>? = null
+-    fun enforceContentClipping() = Unit
+-    fun refreshNavigationSource(host: View): Boolean = false
+-    fun backdropSceneBaseColor(scene: View, fallback: Int): Int = android.graphics.Color.TRANSPARENT
+-    fun resolveSelectedIndex(source: ViewGroup?, slotCount: Int): Int? = null
+-    fun adjustFloatingActions(host: View, source: ViewGroup?) = Unit
+-    fun draw(canvas: Canvas, frame: AdapterNavigationFrame) = Unit
+-    fun logDiagnostic(message: String) = Unit
+-    fun requestVideoBackdrop(host: View, pageAllowed: Boolean) = Unit
+-    fun videoBackdrop(): AppVideoBackdrop? = null
+-    fun drawForeground(canvas: Canvas, frame: AdapterNavigationFrame, selectionPath: android.graphics.Path, drawSource: () -> Unit): Boolean = false
+-    /** Optional app-owned edge composition; false retains the shared path clip. */
+-    fun drawSelectionBackdrop(canvas: Canvas, path: android.graphics.Path, selectedIndex: Int,
+-                              drawContent: () -> Unit): Boolean = false
+-    fun performTap(host: View, source: ViewGroup?, index: Int, slotCount: Int): Boolean = false
+-    fun dispatchNativeNavigationTap(
+-        host: io.github.offlineglass.hook.GlassHostLayout, source: ViewGroup?, index: Int, slotCount: Int,
+-    ): Boolean = false
+-    fun onTapSucceeded(requestRefresh: (Long) -> Unit) = Unit
+-    fun pageAllowsNavigation(root: View?): Boolean? = null
+-    fun hostPageAllowsNavigation(host: io.github.offlineglass.hook.GlassHostLayout, root: View?): Boolean? =
+-        pageAllowsNavigation(root)
+-    /** Opt in when a native destination must cover the bar in its first frame. */
+-    fun skipNavigationExitAnimation(root: View?): Boolean = false
+-    /** Null leaves system navigation-bar immersion to the common page policy. */
+-    fun forceNavigationBarImmersed(host: io.github.offlineglass.hook.GlassHostLayout): Boolean? = null
+-    fun handleSystemBack(host: View): Boolean = false
+-    fun transientPageAllowsNavigation(activity: Activity?): Boolean = true
+-    fun dispose() = Unit
+-}
+-
+-
+-/** Mutable, app-owned source-chrome cleanup invoked at the host's existing cadence. */
+-internal interface AppNativeChromeController {
+-    fun update(host: View, source: ViewGroup?)
+-}
+-
+-/** Explicit registry: an app adapter cannot accidentally run in another package. */
+-internal object TargetAdapterRegistry {
+-    private val custom = listOf(
+-        QqMusicAdapter,
+-        SpotifyAdapter,
+-        AppleMusicAdapter,
+-        DouyinAdapter,
+-        io.github.offlineglass.hook.adapters.tiktok.TikTokAdapter,
+-        NeteaseAdapter,
+-        PddAdapter,
+-        AmapAdapter,
+-        HelloBikeAdapter,
+-        MiCommunityAdapter,
+-        XhsAdapter,
+-        BilibiliAdapter,
+-        BilibiliInAdapter,
+-        MiHealthAdapter,
+-        MiHomeAdapter,
+-        MeituanTakeoutAdapter,
+-        MeituanMainAdapter,
+-        FileManagerAdapter,
+-        TiebaAdapter,
+-        WeChatAdapter,
+-        WeiboAdapter,
+-        MiMarketAdapter,
+-        YouTubeAdapter,
+-        TaobaoAdapter,
+-        JdAdapter,
+-        XianyuAdapter,
+-        CainiaoAdapter,
+-        XjtuAdapter,
+-        io.github.offlineglass.hook.adapters.zhihu.ZhihuAdapter,
+-        ChatGptAdapter,
+-        io.github.offlineglass.hook.adapters.huawei_health.HuaweiHealthAdapter,
+-        XAdapter,
+-        InstagramAdapter,
+-        io.github.offlineglass.hook.adapters.reddit.RedditAdapter,
+-        io.github.offlineglass.hook.adapters.quora.QuoraAdapter,
+-    ).associateBy(TargetAdapter::key)
+-
+-    private val byKey: Map<String, TargetAdapter> = TargetSpecRegistry.all.associate { spec ->
+-        spec.key to (custom[spec.key] ?: MetadataOnlyAdapter(spec.key))
+-    }
+-    private val byPackage: Map<String, TargetAdapter> = TargetSpecRegistry.all.flatMap { spec ->
+-        (listOf(spec.packageName) + spec.aliasPackages).map { pkg -> pkg to byKey.getValue(spec.key) }
+-    }.toMap()
+-
+-    fun forSpec(spec: TargetSpec): TargetAdapter? = byKey[spec.key]
+-
+-    fun forKey(key: String): TargetAdapter? = byKey[key]
+-
+-    fun forPackage(packageName: String): TargetAdapter? = byPackage[packageName]
+-
+-    private class MetadataOnlyAdapter(override val key: String) : TargetAdapter
+-}
+-
+-internal object AdapterNavigationSearch {
+-    fun findFirst(root: View, predicate: (ViewGroup) -> Boolean): ViewGroup? {
+-        val stack = ArrayDeque<Pair<View, Int>>()
+-        stack += root to 0
+-        var visited = 0
+-        while (stack.isNotEmpty() && visited++ < 4_000) {
+-            val (view, depth) = stack.removeLast()
+-            if (view is ViewGroup && depth <= 14 && predicate(view)) return view
+-            if (view is ViewGroup && depth < 16) {
+-                for (index in view.childCount - 1 downTo 0) {
+-                    stack += view.getChildAt(index) to (depth + 1)
+-                }
+-            }
+-        }
+-        return null
+-    }
+-
+-    fun resourceEntryName(view: View): String? = runCatching {
+-        if (view.id == View.NO_ID) null else view.resources.getResourceEntryName(view.id)
+-    }.getOrNull()
+-}
+-
+-
+-
++package io.github.offlineglass.hook.adapters
++
++import android.app.Activity
++import android.content.Context
++import android.graphics.Canvas
++import android.view.View
++import android.view.ViewGroup
++import android.widget.ImageView
++import android.widget.TextView
++import io.github.offlineglass.hook.compat.callbacks.XC_LoadPackage
++import io.github.offlineglass.hook.adapters.amap.AmapAdapter
++import io.github.offlineglass.hook.adapters.hellobike.HelloBikeAdapter
++import io.github.offlineglass.hook.adapters.mi_community.MiCommunityAdapter
++import io.github.offlineglass.hook.adapters.xhs.XhsAdapter
++import io.github.offlineglass.hook.adapters.douyin.DouyinAdapter
++import io.github.offlineglass.hook.adapters.bilibili_in.BilibiliInAdapter
++import io.github.offlineglass.hook.adapters.bilibili.BilibiliAdapter
++import io.github.offlineglass.hook.adapters.meituan.MeituanTakeoutAdapter
++import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainAdapter
++import io.github.offlineglass.hook.adapters.mi_market.MiMarketAdapter
++import io.github.offlineglass.hook.adapters.mi_file_manager.FileManagerAdapter
++import io.github.offlineglass.hook.adapters.mi_health.MiHealthAdapter
++import io.github.offlineglass.hook.adapters.mihome.MiHomeAdapter
++import io.github.offlineglass.hook.adapters.netease.NeteaseAdapter
++import io.github.offlineglass.hook.adapters.pdd.PddAdapter
++import io.github.offlineglass.hook.adapters.taobao.TaobaoAdapter
++import io.github.offlineglass.hook.adapters.tieba.TiebaAdapter
++import io.github.offlineglass.hook.adapters.wechat.WeChatAdapter
++import io.github.offlineglass.hook.adapters.weibo.WeiboAdapter
++import io.github.offlineglass.hook.adapters.youtube.YouTubeAdapter
++import io.github.offlineglass.hook.adapters.xianyu.XianyuAdapter
++import io.github.offlineglass.hook.adapters.cainiao.CainiaoAdapter
++import io.github.offlineglass.hook.adapters.jd.JdAdapter
++import io.github.offlineglass.hook.adapters.qqmusic.QqMusicAdapter
++import io.github.offlineglass.hook.adapters.spotify.SpotifyAdapter
++import io.github.offlineglass.hook.adapters.apple_music.AppleMusicAdapter
++import io.github.offlineglass.hook.adapters.xjtu.XjtuAdapter
++import io.github.offlineglass.hook.adapters.chatgpt.ChatGptAdapter
++import io.github.offlineglass.hook.adapters.x.XAdapter
++import io.github.offlineglass.hook.adapters.instagram.InstagramAdapter
++import io.github.offlineglass.hook.NavigationCandidate
++import io.github.offlineglass.targets.TargetSpec
++import io.github.offlineglass.targets.TargetSpecRegistry
++import io.github.offlineglass.targets.HookSignal
++import io.github.offlineglass.config.GlassConfig
++
++/** The app-owned part of discovery and lifecycle. Shared glass rendering stays in the host. */
++internal interface TargetAdapter {
++    /** Common CPU work reuse; no sampling/quality/cadence changes. */
++    val reuseExactOpticalWork: Boolean get() = true
++    /** Global accepted optical return: continuous background and complete resting handoff. */
++    val completeIndicatorRestingHandoff: Boolean get() = true
++    /** Optional application-owned compatibility setup before Application.attach. */
++    fun installBootstrapHooks(param: XC_LoadPackage.LoadPackageParam) {}
++    /** The target exposes a native English locale that the manager language may control. */
++    val supportsNativeEnglishLocale: Boolean get() = false
++    /** Run config-dependent early setup only after a verified startup snapshot. */
++    fun onConfigurationReady(context: Context, param: XC_LoadPackage.LoadPackageParam) {}
++    /** Legacy diagnostic opt-in; validated startup preferences are now shared by all targets. */
++    val acceptsVersionedStartupPreferences: Boolean get() = false
++    /** Opt-in experimental posture-driven optics; zero preserves existing rendering. */
++    val tiltRefractionStrength: Float get() = io.github.offlineglass.rendering.PostureGlass.STRENGTH
++    /** Shared Flowing Liquid policy; adapters only declare temporary exclusions. */
++    val flowingLiquidEnabled: Boolean get() = true
++    /** Accepted motion policy follows Flowing Liquid, including its exclusions. */
++    val liquidMotionEnabled: Boolean get() = flowingLiquidEnabled
++    val unifiedDropletPilot: Boolean get() = false
++    val directionalRimPilot: Boolean get() = false
++    val outerRefractionScale: Float get() = io.github.offlineglass.rendering.PostureGlass.REFRACTION_SCALE
++    val tiltShadowStrength: Float get() = io.github.offlineglass.rendering.PostureGlass.SHADOW_STRENGTH
++    fun barLayout(config: GlassConfig, width: Int, height: Int, density: Float, slots: Int): AdapterBarLayout? = null
++    /** Adapter policy applied to drawing, optics and input through the same index mapping. */
++    fun isNavigationEntryDisabled(index: Int, slots: Int): Boolean = false
++    val key: String
++    /** Opt-in: apply the outer dynamic-highlight setting in either theme. */
++    val panelHighlightFollowsAllThemes: Boolean get() = false
++    /** Opt-in for the main panel and its sampled copy, never the action or indicator rim. */
++    val featheredInnerPanelHighlight: Boolean get() = true
++    /** Exact contour-search pilot; unrelated to material/animation settings. */
++    val useBoundedContourSearch: Boolean get() = false
++    val ownsNavigationFinding: Boolean get() = false
++    /** Recover when startup or home reconstruction replaces an already installed source. */
++    val recheckNavigationBindingOnLayout: Boolean get() = false
++
++    /** Restore overlay ordering when the app appends home content after startup. */
++    val keepNavigationOverlayOnTop: Boolean get() = false
++    /** Null keeps the legacy generic detector; an app may explicitly opt out. */
++    val nativeSelectionReliable: Boolean? get() = null
++    /** Keep host traversal alive when a static page feeds a compositor surface. */
++    fun needsContinuousOpticalSurfaceFrames(selectedIndex: Int): Boolean = false
++    /** Native source artwork adjustments, owned by each app's adapter. */
++    val sourceIconScale: Float? get() = null
++    val sourceTextTranslationDp: Float? get() = null
++    val sourceIconTranslationDp: Float? get() = null
++    val sourceContentOffsetDp: Float get() = 0f
++    /** Optional native source label size applied before glass projection. */
++    val sourceTextSizeSp: Float? get() = null
++    /** Optional scale used when projecting native artwork into the glass row. */
++    val projectedNavigationScale: Float get() = 1f
++    val ownsNavigationDrawing: Boolean get() = false
++    /** Draw projected native artwork before the liquid indicator so the lens refracts it. */
++    val navigationBehindIndicator: Boolean get() = false
++    val ownsNavigationTap: Boolean get() = false
++    /** Main-navigation-only cold scheduling; adapters exclude non-page accessories. */
++    fun isFirstVisitPage(source: ViewGroup, index: Int, slots: Int): Boolean = true
++    /** Compound accessories may maintain their sibling order as one group. */
++    val managesHostSiblingOrder: Boolean get() = false
++    val commitSelectionAfterTap: Boolean get() = false
++    val skipNavigationSnapshot: Boolean get() = false
++    val stagedNavigationSnapshot: Boolean get() = false
++    val ownsNavigationSnapshotCapturePolicy: Boolean get() = false
++    val supportsScheduledNavigationSnapshotRefresh: Boolean get() = false
++    val navigationSnapshotStableFrames: Int? get() = null
++    val navigationSignatureMaxDepth: Int get() = 5
++    val redrawSurfaceAfterNavigationCapture: Boolean get() = false
++    val usesCommittedSelection: Boolean get() = false
++    val usesContentDarkMode: Boolean get() = false
++    val forceLightMode: Boolean get() = false
++    val ownsHostNativeChrome: Boolean get() = false
++    /** Some adapters use a native source as a visible content host (e.g. mini-player pages). */
++    val keepNavigationSourceVisible: Boolean get() = false
++    val hostLiftDp: Float? get() = null
++    /** Optional width reference; actual tab count and hit slots stay unchanged. */
++    fun hostWidthSlotCount(slots: Int, config: GlassConfig): Int = slots
++    /** Optional compound width built from the standard tab-row widths. */
++    fun compactHostWidth(
++        config: GlassConfig, density: Float, height: Int, tabRowWidth: (Int) -> Int,
++    ): Int? = null
++    val hasPerFrameScene: Boolean get() = false
++    /** Null keeps the normal immersive fitting; an app may pin its own navigation inset. */
++    val navigationImmersionOverride: Boolean? get() = null
++    /** Reapply the saved non-immersive state if an app rewrites window flags after launch. */
++    val repeatImmersionRestoreWhileInactive: Boolean get() = false
++    val suppressPlatformElevation: Boolean get() = false
++    val contentAncestorMaxDepth: Int? get() = null
++    val sourceParentVisibilityOnly: Boolean get() = false
++    val sourceSwapGraceMs: Long get() = 0L
++    val panelShadowBlurDp: Float? get() = null
++    /** Local panel shadow opacity; leaves glass tint and scene content unchanged. */
++    val panelShadowAlphaScale: Float get() = 1f
++    val synchronousConfigPolling: Boolean get() = false
++    val nativeNavigationDrawsInSourceSpace: Boolean get() = false
++    val indicatorInnerShadow: Boolean get() = false
++    val continuousIndicatorMask: Boolean get() = true
++    /** Scale only the slider's border inset; tab hit slots and panel geometry stay shared. */
++    val indicatorInsetScale: Float get() = 1f
++    /** Opt-in pilot: bounded vertical finger follow on the primary bar only. */
++    val indicatorDragVerticalLimitDp: Float get() = 0f
++    /** Optional local tint gain; default preserves the shared resting material. */
++    fun restingIndicatorTintScale(config: io.github.offlineglass.config.GlassConfig): Float = 1f
++    /** Shared slider curve; the visible outer panel is unchanged. */
++    val indicatorCornerSmoothing: Float? get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.CURVE
++    val themeProbeIntervalMs: Long? get() = null
++    val allowRenderNodeRefresh: Boolean get() = false
++    /** Reuse the cached optical blur node instead of rebuilding it during page transitions. */
++    val reuseOpticalBlur: Boolean get() = false
++    /** Retained live RenderNode dependencies update without rebuilding the blur wrapper. */
++    val retainsLiveOpticalBlur: Boolean get() = false
++    /** Keep optical input available while native page-navigation work is prioritized. */
++    val keepsBackdropDuringTapTransition: Boolean get() = false
++    /** Keep capture invalidation active while a live backdrop listener is attached. */
++    val captureDuringLiveBackdrop: Boolean get() = true
++    /** Native source is retained for clicks only; the glass host owns visible rendering. */
++    val hideRedrawnNavigationSource: Boolean get() = false
++    /** Optional source projection rules for app-specific centre actions. */
++    val sourceCenterActionIndex: Int? get() = null
++    val sourceDefaultTranslationDp: Float get() = 0f
++    val sourceCenterTranslationDp: Float get() = 0f
++    val sourceCenterClipRatio: Float get() = 1f
++    val preserveNativeColorIndices: Set<Int> get() = emptySet()
++    /** Delay before a scroll-idle page hides the glass bar. */
++    fun scrollStopHideDelayMs(selectedIndex: Int): Long = 1_000L
++    /** Some native rows need a short settle window after dispatching a click. */
++    val selectionSettleMs: Long get() = 0L
++    /** App-owned scroll-stop-hide tab; the scroll listener itself is shared. */
++    fun scrollStopHideTab(selectedIndex: Int): Boolean = false
++    fun resetScrollStopHideOnOtherTabs(): Boolean = false
++    fun isBackPeekTab(selectedIndex: Int): Boolean = false
++    fun isBackPeekActivity(activity: Activity): Boolean = false
++    val backPeekDurationMs: Long get() = 0L
++    val sceneVisibilityAnimation: Boolean
++        get() = TargetSpecRegistry.byKey[key]?.sceneVisibilityAnimation == true
++    val drawsNavigationInOptics: Boolean
++        get() = TargetSpecRegistry.byKey[key]?.drawsNavigationInOptics == true
++    val suppressSourceOnHostRebind: Boolean get() = false
++    val snapIndicatorToSelectionOnRebind: Boolean get() = false
++    val refreshHostGeometryOnRebind: Boolean get() = false
++    val accentColor: Int? get() = TargetSpecRegistry.byKey[key]?.glassAccentColor
++    val reverseVisualSlotOrder: Boolean get() = false
++    val actionOnlyIndices: Set<Int> get() = emptySet()
++    /** Live native routing may replace the scene while a bar gesture is animating. */
++    val updatesSceneDuringTapTransition: Boolean get() = false
++    val floatingPillUsesSharedInsets: Boolean get() = false
++    val preserveNativeParentBackground: Boolean get() = false
++    val preserveNativeSourceMetrics: Boolean get() = false
++    /** The adapter owns reversible source suppression and leaves native layout intact. */
++    val managesNavigationSourceAppearance: Boolean get() = false
++    val foregroundNavigationOverSelection: Boolean get() = false
++    val usesNavigationOpticalMix: Boolean get() = false
++    val persistentNavigationOpticalMix: Boolean get() = false
++    val foregroundUsesRenderedSelectionOutline: Boolean get() = false
++    val foregroundRequiresSubmittedIndicatorArtwork: Boolean get() = false
++    val usesDetachedDirectSelectionFill: Boolean get() = false
++    val defersColdTapUntilMotionSettles: Boolean get() = true
++    /** Whether the shared tap inset outline can replace the adapter's existing selection geometry. */
++    val supportsInsetTapOutline: Boolean get() = true
++    /** Keep the inset base outline under the existing drag transform. */
++    /** Keep artwork in the foreground when using the inset tap contour. */
++    val insetTapArtworkForegroundOnly: Boolean get() = false
++    val foregroundMaskInsetDp: Float get() = 1f
++    /** Include the lower glass panel's own specular in the upper selection lens. */
++    val samplesPanelHighlightInIndicator: Boolean get() = true
++    /** Record animated sampled specular separately from the reusable material scene. */
++    val independentSampledIndicatorHighlight: Boolean get() = false
++    val pressedIndicatorScale: Float? get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.PRESS_SCALE
++    /** Default-on expansion is unchanged for bottom navigation and ordinary controls. */
++    val indicatorInteractionPolicy: io.github.offlineglass.rendering.IndicatorInteractionPolicy
++        get() = io.github.offlineglass.rendering.IndicatorInteractionPolicy.EXPANDING
++    val concentricIndicatorExpansion: Boolean get() = true
++    val concentricIndicatorExpansionGain: Float get() = 1.6f
++    val activeIndicatorDispersion: Float get() = 0.40f
++    /** Whole-button feedback; null preserves the navigation panel's width-derived growth. */
++    val outerPanelPressScale: Float? get() = null
++    val sampledPanelHighlightWidthDp: Float get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.SPECULAR_WIDTH_DP
++    val sampledPanelHighlightMinimumAlpha: Float get() = io.github.offlineglass.rendering.BottomBarIndicatorStyle.SPECULAR_MIN_ALPHA
++    val requestedFrameRateMax: Float? get() = null
++    val continuousFramePump: Boolean get() = false
++    val observeWindowTouches: Boolean get() = false
++    fun onWindowTouch(host: View, event: android.view.MotionEvent) = Unit
++    val opticalIconBandScale: Float get() = 1f
++    val secondaryBlurScale: Float get() = 1f
++    fun backdropBlurEffect(radius: Float): android.graphics.RenderEffect =
++        io.github.offlineglass.rendering.NativeBackdropBlur.effect(radius)
++    fun liveBackdropTransform(parent: View, host: View, out: android.graphics.Matrix): Boolean = false
++    val skipBackdropStableDelay: Boolean get() = false
++    val forceCompositorFrames: Boolean get() = false
++    val disablePlatformForceDark: Boolean get() = false
++    val liveBackdropFramePump: Boolean get() = false
++    val refreshOpticsOnBarShow: Boolean get() = false
++    val releaseOutlineClipping: Boolean get() = false
++    fun hiddenBarTranslationPx(hostHeight: Int, density: Float): Float? = null
++    /** Explicit scene direction; null preserves every existing animation scheme. */
++    fun sceneExitTranslationPx(hostHeight: Int, density: Float): Float? = null
++    /** YouTube-style translation/alpha only, without spring scale/overshoot. */
++    val simpleSceneVisibilityAnimation: Boolean get() = false
++    /** Shared low-power Surface/PixelCopy engine; page selection remains app-owned. */
++    val usesOpticalSurfacePipeline: Boolean get() = false
++    val keepsOpticalSurfaceDuringBarAnimation: Boolean get() = false
++    val retainsOpticalSurfaceWhenBarHidden: Boolean get() = false
++    val opticalSurfaceFollowsBarTransform: Boolean get() = true
++    val usesDirectOpticalBackdropMode: Boolean get() = false
++    val usesNativeOpticalBlur: Boolean get() = false
++    val ownsOpticalSurfaceLayout: Boolean get() = false
++    /** Adapter positions its host; slot/config updates must not apply bottom-bar geometry. */
++    val ownsHostLayout: Boolean get() = false
++    /** Transparent optical buffer margin, including animated ambient shadows. */
++    val opticalSurfaceOverflowDp: Float get() = 32f
++    /** Defer sibling removal until the parent finishes its detach traversal. */
++    val deferCompanionRemovalOnDetach: Boolean get() = false
++    fun opticalSurfaceLayout(
++        contentWidth: Int, contentHeight: Int, hostLeft: Int, hostTop: Int,
++        hostWidth: Int, hostHeight: Int, overflow: Int,
++    ): OpticalSurfaceLayout? = null
++    val allowsSystemBackgroundBlur: Boolean get() = true
++    val countsOpticalCompositorCopies: Boolean get() = false
++    val deferOpticalRenderDuringBarAnimation: Boolean get() = false
++    val reuseSurfaceBlurDuringBarAnimation: Boolean get() = false
++    val usesContentAlignedOpticalSurface: Boolean get() = false
++    val retainsExistingBackdropRenderNode: Boolean get() = false
++    fun isOpticalSurfaceTab(selectedIndex: Int): Boolean = false
++    val restingOpticalMix: Float? get() = null
++    val logNavigationHierarchy: Boolean get() = false
++    val clearSourceSelectionSurfaces: Boolean get() = false
++    val trackSourceDrawableIdentity: Boolean get() = false
++    /** Some native ImageViews draw their icon from background instead of src. */
++    val trackSourceImageBackgroundIdentity: Boolean get() = false
++    val managesNativeTabVisibility: Boolean get() = false
++    val honorsBackdropCaptureSetting: Boolean get() = false
++    fun normalizeConfig(config: GlassConfig): GlassConfig = config
++    fun hostBottomMarginPx(view: View, defaultGap: Int): Int = defaultGap
++    fun opticalCaptureGeometry(
++        rootWidth: Int, rootHeight: Int, left: Int, top: Int, width: Int, height: Int, padding: Int,
++    ): OpticalCaptureGeometry? = null
++    fun createNavigationState(context: Context): AppNavigationState? = null
++    fun createNavigationState(context: Context, host: io.github.offlineglass.hook.GlassHostLayout): AppNavigationState? =
++        createNavigationState(context)
++    fun createNativeChromeController(): AppNativeChromeController? = null
++    fun screenReferenceHeight(rootHeight: Int?, displayHeight: Int): Int? = null
++    fun drawNavigation(canvas: Canvas, frame: AdapterNavigationFrame) = Unit
++    val hasTransientPageVisibility: Boolean get() = false
++    /** Beta build policy: keep the bottom bar on the app home screen only. */
++    val homeOnlyNavigation: Boolean get() = false
++    fun navigationSurfaceColor(activity: Activity?, source: View?, dark: Boolean): Int? = null
++    /** Visible glass fill, also used in the indicator's captured navigation row. */
++    /** Opt-in factor after the shared global surface opacity. */
++    fun surfaceOpacityScale(config: GlassConfig): Float = 1f
++    fun glassSurfaceFillColor(dark: Boolean, selectedIndex: Int, defaultColor: Int): Int = defaultColor
++    fun glassSurfaceFillBlendMode(dark: Boolean): android.graphics.BlendMode? = null
++    fun dispatchNavigationTap(source: ViewGroup?, index: Int, slotCount: Int): Boolean = false
++    fun configureNavigationInsets(decor: View, enabled: Boolean) = Unit
++    fun immersionWasReset(immersiveStub: Any?): Boolean = false
++    fun pushedConfig(): GlassConfig? = null
++    fun acceptPushedConfig(config: GlassConfig): Boolean = false
++    fun findNavigation(root: View, spec: TargetSpec): NavigationCandidate? = null
++    fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? = null
++    fun adjustNavigationScore(view: ViewGroup, idName: String?, score: Int): Int = score
++    fun onNavigationCandidates(candidates: List<NavigationCandidate>) = Unit
++    fun suppressNativeBottomChrome(navigation: ViewGroup) = Unit
++    /** Host-aware variant for adapters that must exclude the glass host subtree from tree walks. */
++    fun suppressNativeBottomChrome(host: View, navigation: ViewGroup) =
++        suppressNativeBottomChrome(navigation)
++    fun suppressNativeBottomChromeOnRebind(navigation: ViewGroup) = Unit
++    fun prepareContentForInstall(content: ViewGroup) = Unit
++    fun prepareNavigationSource(navigation: ViewGroup, density: Float) = Unit
++    /** Return true when the adapter fully configured this source label. */
++    fun configureSourceText(view: TextView, config: GlassConfig, density: Float): Boolean = false
++    /** Return true when the adapter fully configured this source icon. */
++    fun configureSourceIcon(view: ImageView, config: GlassConfig, density: Float): Boolean = false
++    fun resolveNestedNavigation(navigation: ViewGroup): Pair<ViewGroup, Int>? = null
++    /** Remap the persisted slot mask when the native row's live slot count differs
++     *  from the count the mask was authored against (an app may drop a tab). */
++    fun navigationHiddenMask(mask: Int, slots: Int): Int = mask
++    fun acceptsNavigationSource(navigation: ViewGroup): Boolean = true
++    fun hookSignals(): List<TargetHookSignal> = emptyList()
++    fun installHooks(lpparam: XC_LoadPackage.LoadPackageParam, spec: TargetSpec) = Unit
++    fun beforeNavigationScan(activity: Activity) = Unit
++    fun isBlockingOverlayActivity(activity: Activity): Boolean = false
++    fun setBlockingOverlayVisible(visible: Boolean) = Unit
++    fun isBlockingOverlayVisible(): Boolean = false
++}
++
++internal typealias TargetHookSignal = HookSignal
++
++/** Adapter-owned overlay excluded from generic sampling and traversal. */
++internal interface AdapterOwnedOverlay
++
++/** Generic compound panel geometry, supplied exclusively by the app adapter. */
++internal data class AdapterBarLayout(
++    val mainWidth: Float,
++    val actionLeft: Float,
++    val actionSize: Float,
++    val actionIndex: Int,
++    val navigationIndices: List<Int>,
++    /** Optional action material, replacing the default light/dark panel fill. */
++    val actionFillColor: Int? = null,
++    /** Evaluate a detached lens in local coordinates with its own filtered input bounds. */
++    val localActionOptics: Boolean = false,
++    /** Opt-in: main capsule owns a separate local lens, never a compound SDF. */
++    val localMainOptics: Boolean = false,
++    /** Strength of the detached action's liquid highlight relative to the panel default. */
++    val actionHighlightScale: Float = 1f,
++    /** Keep the supplied RGB and use the surface slider, including in solid bar mode. */
++    val actionFillUsesOnlySurfaceOpacity: Boolean = false,
++)
++
++internal data class AdapterNavigationFrame(
++    val context: Context,
++    val extraScale: Float,
++    val slotCount: Int,
++    val width: Int,
++    val height: Int,
++    val slotWidth: Float,
++    val density: Float,
++    val iconScale: Float,
++    val textSize: Float,
++    val scaledDensity: Float,
++    val selectedIndex: Int,
++    val enabledIndices: List<Int>,
++    val iconOnly: Boolean,
++    val darkGlass: Boolean,
++    val accentColor: Int,
++    val barLayout: AdapterBarLayout? = null,
++    val navigationOpticalMix: Float = 0f,
++    val hideSelectedForOptics: Boolean = false,
++    val targetKey: String = "",
++    val managerEnglishLabels: Boolean = false,
++    val detachedDirectSelection: Boolean = false,
++    val topBarTabs: io.github.offlineglass.hook.topbar.TopBarTabLayout? = null,
++) {
++    fun channelCenter(index: Int): Float =
++        topBarTabs?.takeIf { index in 0 until it.size }?.center(index, width, 4f * density)
++            ?: 4f * density + (index + .5f) * slotWidth
++    fun channelEdge(index: Int): Float =
++        topBarTabs?.takeIf { index in 0..it.size }?.edge(index, width, 4f * density)
++            ?: 4f * density + index * slotWidth
++}
++
++internal fun AdapterNavigationFrame.localizeNavigationLabel(label: String): String =
++    if (managerEnglishLabels) NavigationLabelLocalization.toEnglish(targetKey, label) else label
++
++/** A verified scene node, positioned in physical screen coordinates. */
++internal data class RetainedNavigationBackdrop(val node: android.graphics.RenderNode, val toScreen: android.graphics.Matrix)
++
++internal data class AppVideoBackdrop(
++    val bitmap: android.graphics.Bitmap,
++    val surfaceLeft: Int,
++    val surfaceTop: Int,
++    val surfaceWidth: Int,
++    val surfaceHeight: Int,
++    val epoch: Int,
++)
++
++/** Per-host mutable navigation resources owned by one app, not the shared glass renderer. */
++internal data class NavigationCaptureLabels(
++    val labels: List<TextView>,
++    val retryDelayMs: Long = 0L,
++)
++
++internal data class OpticalCaptureGeometry(
++    val sourceRect: android.graphics.Rect,
++    val targetWidth: Int,
++    val targetHeight: Int,
++    val barSource: android.graphics.Rect,
++)
++
++internal data class OpticalSurfaceLayout(
++    val width: Int, val height: Int, val left: Int, val top: Int,
++    val right: Int, val bottom: Int, val gravity: Int,
++)
++
++internal interface AppNavigationState {
++    /** Dynamic capability shared by projection, hit testing and selection. */
++    fun isNavigationEntryAvailable(index: Int): Boolean? = null
++    /** Optional animated indicator center/width; null keeps normal slot geometry. */
++    fun indicatorHorizontalGeometry(center: Float, width: Float): Pair<Float, Float>? = null
++    /** Map physical touch coordinates into the host's uniform slot coordinate space. */
++    fun uniformSlotTouchX(x: Float, hostWidth: Int, padding: Float): Float = x
++    /** Optional detached action feedback; zero preserves existing adapters. */
++    fun actionButtonPressProgress(): Float = 0f
++    /** Animated panel width; default retains the common layout. */
++    fun hostPanelWidth(defaultWidth: Int): Int = defaultWidth
++    /** Opt-in measured geometry; keeps optics and input in the panel's real coordinates. */
++    fun hostPanelHeight(defaultHeight: Int): Int = defaultHeight
++    /** Null uses normal navigation gestures; true/false owns this event's dispatch. */
++    fun interceptNavigationTouch(host: View, event: android.view.MotionEvent): Boolean? = null
++    /** Some native scenes contain GPU-only assets and cannot be drawn to a Bitmap Canvas. */
++    val allowsSoftwareBackdropCapture: Boolean get() = true
++    /** A new native page/content revision must not reuse a previous-page software input. */
++    fun needsFreshSoftwareBackdrop(): Boolean = false
++    fun onSoftwareBackdropRecorded() = Unit
++    /** Lightweight adapter-owned work that runs from the shared pre-draw cadence. */
++    fun onHostFrame(host: View) = Unit
++    /** Default null: persistent first-visit pictures are an adapter-only experiment. */
++    fun firstVisitPresentation(host: View): io.github.offlineglass.rendering.FirstVisitPresentation? = null
++    fun onContentScroll() = Unit
++    fun onNavigationTabSwitched(index: Int, slotCount: Int, now: Long) = Unit
++    fun contentMotionHoldUntil(): Long = 0L
++    fun onNavigationSelectionRequested(index: Int, slotCount: Int, now: Long): Boolean = false
++    fun acceptNativeNavigationSelection(index: Int, now: Long): Boolean? = null
++    fun followingNativeNavigationAnimation(now: Long): Boolean = false
++    fun pendingNativeNavigationTarget(now: Long): Int? = null
++    val readyForDrawing: Boolean get() = true
++    val blocksBackdropSampling: Boolean get() = false
++    fun prepare(source: ViewGroup?, schedule: (Long, () -> Unit) -> Unit) = Unit
++    fun captureNavigation(source: ViewGroup, target: android.graphics.Bitmap): Boolean = false
++    fun acceptCapturedNavigation(source: ViewGroup?, target: android.graphics.Bitmap, selectedIndex: Int): Boolean = true
++    fun acceptAndCommitNavigationSnapshot(
++        source: ViewGroup?, target: android.graphics.Bitmap, selectedIndex: Int, slotCount: Int,
++        commit: (android.graphics.Bitmap) -> Unit,
++    ): Boolean? = null
++    fun inspectNavigationCaptureLabels(source: ViewGroup, hasSnapshot: Boolean): NavigationCaptureLabels? = null
++    fun temporarilyHideNavigationLabels(labels: List<TextView>, selectedIndex: Int): List<Pair<TextView, Int>> = emptyList()
++    /** Null uses the shared snapshot cadence; true skips this frame's capture. */
++    fun skipNavigationSnapshotCapture(
++        source: ViewGroup, snapshot: android.graphics.Bitmap?, touching: Boolean,
++        visualAnimating: Boolean, slotCount: Int, now: Long,
++    ): Boolean? = null
++    fun replaceCapturedVideoSlot(target: android.graphics.Bitmap) = Unit
++    fun drawFixedNavigationSlot(canvas: Canvas, index: Int, selectedIndex: Int, dark: Boolean,
++                                centerX: Float, centerY: Float, boxSize: Float): Boolean = false
++    fun sourceContentOffsetY(index: Int, selectedIndex: Int, hostHeight: Int,
++                             transformDy: Float, transformScale: Float): Float? = null
++    fun drawAppBadgeOverlay(canvas: Canvas, host: View, contentScale: Float) = Unit
++    /** App-owned snapshot crop/repaint stages for native tab artwork. */
++    fun transformNavigationSnapshot(source: ViewGroup, snapshot: android.graphics.Bitmap, slotCount: Int): android.graphics.Bitmap? = null
++    fun onNavigationSnapshotReady(snapshot: android.graphics.Bitmap, slotCount: Int) = Unit
++    fun drawNavigationSnapshotOverlay(canvas: Canvas, frame: AdapterNavigationFrame,
++                                      snapshot: android.graphics.Bitmap?) = Unit
++    /** Whether the current app mode needs a sampled copy of content behind the bar. */
++    fun requiresSampledBackdrop(): Boolean = true
++    /** Refract adapter-owned navigation artwork even when the page owns its own compositor. */
++    val usesArtworkOnlyIndicatorLens: Boolean get() = false
++    fun needsSurfaceBackdrop(): Boolean = false
++    fun maintainsCompositorSamplingWithoutSurface(): Boolean = false
++    /** Desired renderer mode, independent of asynchronous Surface lifecycle. */
++    fun allowsOpticalSurfacePipeline(): Boolean = true
++    /** Window-strip capture needs a transparent output surface before its first frame. */
++    fun preparesOpticalSurfaceForWindowCapture(): Boolean = false
++    /** Reject readbacks requested for a scene that has since been replaced. */
++    fun opticalCaptureEpoch(): Long = 0L
++    /** Optional app-owned worker for PixelCopy callbacks; null keeps the shared worker. */
++    fun opticalSurfaceCopyHandler(): android.os.Handler? = null
++    /** Optional adapter-owned ordering of readback relative to app frame submission. */
++    fun scheduleOpticalSurfaceCopy(root: View, copy: () -> Unit): Boolean = false
++    fun onOpticalSurfaceCopyCompleted(root: View, nextCopy: () -> Unit) = Unit
++    /** Reuse the retired buffer for the next copy while the published frame renders. */
++    fun overlapsOpticalCopyAndRender(): Boolean = false
++    /** Coalesce new samples with native navigation drawing on the UI frame. */
++    fun deferOpticalCopyRenderToUi(): Boolean = false
++    fun directOpticalBackdropActive(): Boolean = false
++    fun opticalSurfaceVisibleDuringTransition(hostVisibility: Int, hostAlpha: Float): Boolean? = null
++    fun enterDirectOpticalBackdrop(surface: android.view.SurfaceView, pipelineActive: Boolean): Boolean = false
++    fun onOpticalSurfaceFrameInvalidated() = Unit
++    fun onOpticalSurfacePipelineEnabled(wasActive: Boolean) = Unit
++    fun onOpticalBackdropCaptured(barSource: android.graphics.Rect?) = Unit
++    /** A changed sampled image can indicate movement without a View scroll event. */
++    fun onOpticalBackdropChanged() = Unit
++    fun onOpticalSurfaceFrameRendered(): Boolean = false
++    fun onOpticalRendererConfigurationChanged() = Unit
++    fun holdDirectBackdropUntilOpticalFrame(liveBackdropActive: Boolean, hasDisplayList: Boolean): Boolean = false
++    fun shouldQueueOpticalRenderFromUi(animating: Boolean): Boolean? = null
++    fun queueOpticalSurfaceRender(
++        handler: android.os.Handler?, active: () -> Boolean, render: () -> Unit,
++    ): Boolean = false
++    fun syncNativeSurfaceOuterEffect(
++        view: View, liquidGlassEnabled: Boolean, width: Int, height: Int, blurRadius: Float,
++        cornerRadiusPercent: Float, density: Float, shaderFactory: () -> android.graphics.RuntimeShader?,
++    ): Boolean = false
++    fun retainBackdropDuringTransition(now: Long): Boolean = false
++    fun retainHomeBackdrop(selectedIndex: Int): Boolean = false
++    fun deferThemeDetection(now: Long): Boolean = false
++    fun needsContinuousHomeFrames(selectedIndex: Int): Boolean = false
++    fun pageRequiresScrollStopHide(selectedIndex: Int): Boolean = false
++    fun retainNavigationWhenNativeRowHidden(selectedIndex: Int): Boolean = false
++    fun retainNavigationWithoutNativeSource(selectedIndex: Int): Boolean =
++        retainNavigationWhenNativeRowHidden(selectedIndex)
++    fun onBarGesture(phase: Int, host: View) = Unit
++    fun suppressNativeChrome(source: ViewGroup?) = Unit
++    fun suppressNativeChromeEarly(source: ViewGroup?) = Unit
++    fun suppressHostNativeChrome(source: ViewGroup?, root: View, selected: Int) = Unit
++    fun drawNativeNavigation(canvas: Canvas, source: ViewGroup, density: Float): Boolean = false
++    /** Distinguish lens input artwork from the ordinary foreground projection. */
++    fun drawNativeNavigation(canvas: Canvas, source: ViewGroup, density: Float, forOptics: Boolean): Boolean =
++        drawNativeNavigation(canvas, source, density)
++    fun onHostPreDraw(
++        host: View, source: ViewGroup?, selected: () -> Int,
++        enabled: Boolean, density: Float,
++        barHeightPx: Int,
++        surfaceColor: () -> Int,
++    ) = Unit
++    /** Return true when an app configured its own compositor/backdrop transition policy. */
++    fun updateBackdropRendererMode(host: io.github.offlineglass.hook.GlassHostLayout): Boolean = false
++    fun onHostFocusLost() = Unit
++    fun onHostWindowFocusChanged(hasFocus: Boolean) = Unit
++    fun onHostDetached() = Unit
++    fun onHostPreDrawDuringTapTransition(host: View) = Unit
++    fun syncVisibilityCompanion(host: View, selectedIndex: Int): Boolean = false
++    fun beforeHostDraw(host: View, source: ViewGroup?): Boolean = true
++    fun hostChromeAlpha(host: View, selectedIndex: Int): Float = 1f
++    fun drawAdditionalAmbientShadow(canvas: Canvas, dark: Boolean, alphaScale: Float) = Unit
++    fun drawsPanelAmbientShadow(): Boolean = true
++    fun drawPanelEdgeGlow(canvas: Canvas, path: android.graphics.Path, density: Float) = Unit
++    fun drawSampledBackdrop(canvas: Canvas, bitmap: android.graphics.Bitmap,
++                            destination: android.graphics.RectF, paint: android.graphics.Paint): Boolean = false
++    fun reuseOuterBackdropForSurface(surfaceActive: Boolean): Boolean = false
++    fun outerBackdropNeedsRecord(
++        backdrop: android.graphics.Bitmap?, width: Int, height: Int, hasDisplayList: Boolean,
++    ): Boolean? = null
++    fun onOuterBackdropRecorded(backdrop: android.graphics.Bitmap?, width: Int, height: Int) = Unit
++    fun reuseCombinedIndicatorScene(surfaceActive: Boolean): Boolean = false
++    /** Reuse captured indicator inputs while animating only their release opacity. */
++    val retainsIndicatorReturnLayers: Boolean get() = false
++    fun combinedIndicatorSceneNeedsRecord(
++        backdrop: android.graphics.Bitmap?, navigation: android.graphics.Bitmap?, signature: Long,
++        width: Int, height: Int, dark: Boolean, hasDisplayList: Boolean,
++    ): Boolean? = null
++    fun onCombinedIndicatorSceneRecorded(
++        backdrop: android.graphics.Bitmap?, navigation: android.graphics.Bitmap?, signature: Long,
++        width: Int, height: Int, dark: Boolean,
++    ) = Unit
++    fun drawHiddenTabsInIndicatorScene(hybridBackdrop: Boolean): Boolean? = null
++    /** Compose the lens from this frame's rendered panel, retaining navigation artwork. */
++    fun indicatorUsesPanelBackdrop(): Boolean = true
++    /** Retain resting material independently of backdrop transitions; gestures stay clear. */
++    val persistentRestingIndicatorFill: Boolean get() = true
++    /** Keep material only inside the hidden optical row during indicator gestures. */
++    val retainHiddenSourceFillWhileExpanded: Boolean get() = true
++    fun includeNavigationInIndicatorScene(surfaceActive: Boolean): Boolean? = null
++    fun opticalBlurNodeNeedsRecord(
++        prepared: Boolean, backdrop: android.graphics.Bitmap?, width: Int, height: Int,
++        effect: android.graphics.RenderEffect?,
++    ): Boolean? = null
++    fun onOpticalBlurNodeRecorded(
++        backdrop: android.graphics.Bitmap?, width: Int, height: Int,
++        effect: android.graphics.RenderEffect?,
++    ) = Unit
++    fun skipLiveBackdrop(selectedIndex: Int): Boolean = false
++    fun canReuseLiveBackdrop(selectedIndex: Int): Boolean = false
++    /** Refresh retained GPU wrappers when a texture producer supplies a new frame. */
++    fun forceLiveBackdropFrame(selectedIndex: Int): Boolean = false
++    fun onLiveBackdropRecorded(selectedIndex: Int) = Unit
++    fun beginOverlayTouch(host: View, event: android.view.MotionEvent): Boolean = false
++    fun hasActiveOverlayTouch(): Boolean = false
++    fun forwardOverlayTouch(host: View, event: android.view.MotionEvent) = Unit
++    fun clearOverlayTouch() = Unit
++    fun navigationBarGeometry(): android.graphics.RectF? = null
++    fun allowsHostTouch(): Boolean = true
++    fun setNativeBarTouchable(view: View?, touchable: Boolean): Boolean = false
++    fun onHostTouchDown(host: View, selectedIndex: Int) = Unit
++    /** Keep non-panel scene work out of an app-owned exit animation when required. */
++    val pauseBackdropDuringBarExit: Boolean get() = false
++    /** Keep page/lifecycle tracking active while an invisible panel needs no sampling. */
++    fun pauseBackdropWork(host: View): Boolean = false
++    /** The focused native window of a control whose material is drawn in its parent window. */
++    fun focusedOpticalWindow(host: View): View? = null
++    /** Pause only optical readback/probe wakeups while retaining a hidden Surface. */
++    fun pauseOpticalSurfaceProbe(): Boolean = false
++    fun drawsNavigationContent(): Boolean = true
++    /** Per-host opt-out for optional artwork modes; default preserves adapters. */
++
++    fun navigationOpticalMixEnabled(): Boolean = true
++
++    /** Page-owned tint animation, independent of artwork and optical strength. */
++    fun surfaceTintFraction(): Float = 1f
++    fun drawsSelectionFillOnly(): Boolean = false
++    fun selectionOpticalFraction(): Float = 1f
++    /** Restrict sampled artwork to the same footprint excluded from foreground artwork. */
++    fun clipsSampledNavigationToIndicator(): Boolean = false
++    fun suppressRedrawnSource(): Boolean? = null
++    fun forceDarkMode(selectedIndex: Int): Boolean? = null
++    fun resolveAutoDarkMode(host: View): Boolean? = null
++    fun resolveBackdropScene(host: View): View? = null
++    val suppliesRetainedNavigationBackdrop: Boolean get() = false
++    fun retainedNavigationBackdrop(): RetainedNavigationBackdrop? = null
++    /** Opt in to a filtered descendant list inside resolveBackdropScene's root. */
++    val backdropSceneViewsAreDescendants: Boolean get() = false
++    /** Optional safe subtrees; ancestor nodes containing media surfaces must not be replayed. */
++    fun backdropSceneViews(content: ViewGroup, hostIndex: Int): List<View>? = null
++    fun enforceContentClipping() = Unit
++    fun refreshNavigationSource(host: View): Boolean = false
++    fun backdropSceneBaseColor(scene: View, fallback: Int): Int = android.graphics.Color.TRANSPARENT
++    fun resolveSelectedIndex(source: ViewGroup?, slotCount: Int): Int? = null
++    fun adjustFloatingActions(host: View, source: ViewGroup?) = Unit
++    fun draw(canvas: Canvas, frame: AdapterNavigationFrame) = Unit
++    fun logDiagnostic(message: String) = Unit
++    fun requestVideoBackdrop(host: View, pageAllowed: Boolean) = Unit
++    fun videoBackdrop(): AppVideoBackdrop? = null
++    fun drawForeground(canvas: Canvas, frame: AdapterNavigationFrame, selectionPath: android.graphics.Path, drawSource: () -> Unit): Boolean = false
++    /** Optional app-owned edge composition; false retains the shared path clip. */
++    fun drawSelectionBackdrop(canvas: Canvas, path: android.graphics.Path, selectedIndex: Int,
++                              drawContent: () -> Unit): Boolean = false
++    fun performTap(host: View, source: ViewGroup?, index: Int, slotCount: Int): Boolean = false
++    fun dispatchNativeNavigationTap(
++        host: io.github.offlineglass.hook.GlassHostLayout, source: ViewGroup?, index: Int, slotCount: Int,
++    ): Boolean = false
++    fun onTapSucceeded(requestRefresh: (Long) -> Unit) = Unit
++    fun pageAllowsNavigation(root: View?): Boolean? = null
++    fun hostPageAllowsNavigation(host: io.github.offlineglass.hook.GlassHostLayout, root: View?): Boolean? =
++        pageAllowsNavigation(root)
++    /** Opt in when a native destination must cover the bar in its first frame. */
++    fun skipNavigationExitAnimation(root: View?): Boolean = false
++    /** Null leaves system navigation-bar immersion to the common page policy. */
++    fun forceNavigationBarImmersed(host: io.github.offlineglass.hook.GlassHostLayout): Boolean? = null
++    fun handleSystemBack(host: View): Boolean = false
++    fun transientPageAllowsNavigation(activity: Activity?): Boolean = true
++    fun dispose() = Unit
++}
++
++
++/** Mutable, app-owned source-chrome cleanup invoked at the host's existing cadence. */
++internal interface AppNativeChromeController {
++    fun update(host: View, source: ViewGroup?)
++}
++
++/** Explicit registry: an app adapter cannot accidentally run in another package. */
++internal object TargetAdapterRegistry {
++    private val custom = listOf(
++        QqMusicAdapter,
++        SpotifyAdapter,
++        AppleMusicAdapter,
++        DouyinAdapter,
++        io.github.offlineglass.hook.adapters.tiktok.TikTokAdapter,
++        NeteaseAdapter,
++        PddAdapter,
++        AmapAdapter,
++        HelloBikeAdapter,
++        MiCommunityAdapter,
++        XhsAdapter,
++        BilibiliAdapter,
++        BilibiliInAdapter,
++        MiHealthAdapter,
++        MiHomeAdapter,
++        MeituanTakeoutAdapter,
++        MeituanMainAdapter,
++        FileManagerAdapter,
++        TiebaAdapter,
++        WeChatAdapter,
++        WeiboAdapter,
++        MiMarketAdapter,
++        YouTubeAdapter,
++        TaobaoAdapter,
++        JdAdapter,
++        XianyuAdapter,
++        CainiaoAdapter,
++        XjtuAdapter,
++        io.github.offlineglass.hook.adapters.zhihu.ZhihuAdapter,
++        ChatGptAdapter,
++        io.github.offlineglass.hook.adapters.huawei_health.HuaweiHealthAdapter,
++        XAdapter,
++        InstagramAdapter,
++        io.github.offlineglass.hook.adapters.reddit.RedditAdapter,
++        io.github.offlineglass.hook.adapters.quora.QuoraAdapter,
++    ).associateBy(TargetAdapter::key)
++
++    private val byKey: Map<String, TargetAdapter> = TargetSpecRegistry.all.associate { spec ->
++        spec.key to (custom[spec.key] ?: MetadataOnlyAdapter(spec.key))
++    }
++    private val byPackage: Map<String, TargetAdapter> = TargetSpecRegistry.all.flatMap { spec ->
++        (listOf(spec.packageName) + spec.aliasPackages).map { pkg -> pkg to byKey.getValue(spec.key) }
++    }.toMap()
++
++    fun forSpec(spec: TargetSpec): TargetAdapter? = byKey[spec.key]
++
++    fun forKey(key: String): TargetAdapter? = byKey[key]
++
++    fun forPackage(packageName: String): TargetAdapter? = byPackage[packageName]
++
++    private class MetadataOnlyAdapter(override val key: String) : TargetAdapter
++}
++
++internal object AdapterNavigationSearch {
++    fun findFirst(root: View, predicate: (ViewGroup) -> Boolean): ViewGroup? {
++        val stack = ArrayDeque<Pair<View, Int>>()
++        stack += root to 0
++        var visited = 0
++        while (stack.isNotEmpty() && visited++ < 4_000) {
++            val (view, depth) = stack.removeLast()
++            if (view is ViewGroup && depth <= 14 && predicate(view)) return view
++            if (view is ViewGroup && depth < 16) {
++                for (index in view.childCount - 1 downTo 0) {
++                    stack += view.getChildAt(index) to (depth + 1)
++                }
++            }
++        }
++        return null
++    }
++
++    fun resourceEntryName(view: View): String? = runCatching {
++        if (view.id == View.NO_ID) null else view.resources.getResourceEntryName(view.id)
++    }.getOrNull()
++}
++
++
++
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt
+index 6535386..27bf1e6 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainAdapter.kt
+@@ -1,85 +1,92 @@
+-package io.github.offlineglass.hook.adapters.meituan_main
+-
+-import android.view.View
+-import android.view.ViewGroup
+-import android.content.Context
+-import io.github.offlineglass.hook.GlassHostLayout
+-import io.github.offlineglass.hook.adapters.AppNavigationState
+-import io.github.offlineglass.hook.adapters.AppNativeChromeController
+-import io.github.offlineglass.hook.adapters.TargetAdapter
+-import io.github.offlineglass.targets.TargetSpec
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.SLOT_COUNT
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
+-
+-/** The real Meituan tab row is nested under TabBlockV2. */
+-internal object MeituanMainAdapter : TargetAdapter {
+-    override val key = "meituan_main"
+-    override val concentricIndicatorExpansion = true
+-    override val concentricIndicatorExpansionGain = 1.6f
+-    override val activeIndicatorDispersion = 0.40f
+-    override val forceLightMode = true
+-    override val hasPerFrameScene = true
+-    override val updatesSceneDuringTapTransition = true
+-    override val nativeSelectionReliable = true
+-    override val ownsNavigationDrawing = true
+-    override val skipNavigationSnapshot = true
+-    override val foregroundNavigationOverSelection = true
+-    override val usesNavigationOpticalMix = true
+-    override val persistentNavigationOpticalMix = true
+-    override val foregroundMaskInsetDp = 0f
+-    override val ownsNavigationTap = true
+-    override val managesNativeTabVisibility = true
+-    override val commitSelectionAfterTap = true
+-    override val accentColor: Int? = 0xFFFFC300.toInt()
+-    override val reuseOpticalBlur = true
+-    // Native routing is immediate; optical input follows the committed native page.
+-    override val keepsBackdropDuringTapTransition = true
+-    override val skipBackdropStableDelay = true
+-    override val captureDuringLiveBackdrop = false
+-    override val hideRedrawnNavigationSource = true
+-    override val projectedNavigationScale = 1f
+-    override val sourceCenterActionIndex = 2
+-    override val suppressPlatformElevation = true
+-    override val continuousIndicatorMask = true
+-    override fun normalizeConfig(config: io.github.offlineglass.config.GlassConfig) =
+-        config.copy(themeMode = io.github.offlineglass.config.GlassConfig.THEME_LIGHT, hiddenMask = config.hiddenMask or (1 shl VIDEO), detachedPublish = config.meituanDetachedXiaotuan)
+-    override fun barLayout(config: io.github.offlineglass.config.GlassConfig, width: Int,
+-        height: Int, density: Float, slots: Int): io.github.offlineglass.hook.adapters.AdapterBarLayout? {
+-        if (!config.detachedPublish || slots != SLOT_COUNT || config.hiddenMask and 4 != 0 ||
+-            height <= 0 || width <= height + 12f * density) return null
+-        val navigation = listOf(0, 3, 4).filter { config.hiddenMask and (1 shl it) == 0 }
+-        if (navigation.isEmpty()) return null
+-        val actionLeft = width - height.toFloat()
+-        return io.github.offlineglass.hook.adapters.AdapterBarLayout(
+-            mainWidth = actionLeft - 12f * density, actionLeft = actionLeft,
+-            actionSize = height.toFloat(), actionIndex = 2, navigationIndices = navigation,
+-        )
+-    }
+-    override val sourceDefaultTranslationDp = -6f
+-    override val sourceCenterTranslationDp = -2f
+-    override val sourceCenterClipRatio = 0.7f
+-    override val preserveNativeColorIndices = setOf(2)
+-    override val selectionSettleMs = 220L
+-    override fun scrollStopHideTab(selectedIndex: Int): Boolean = false
+-    override fun createNavigationState(context: Context): AppNavigationState = MeituanMainNavigationState()
+-    override fun createNavigationState(context: Context, host: GlassHostLayout): AppNavigationState =
+-        MeituanMainNavigationState(host)
+-    override fun resetScrollStopHideOnOtherTabs(): Boolean = true
+-    override fun scrollStopHideDelayMs(selectedIndex: Int): Long = when (selectedIndex) {
+-        3 -> 800L
+-        4 -> 1_500L
+-        else -> 1_000L
+-    }
+-    override fun createNativeChromeController(): AppNativeChromeController = MeituanMainNativeChrome()
+-    override fun acceptsNavigationSource(navigation: ViewGroup): Boolean =
+-        MeituanMainNativeTabs.isNavigationRow(navigation)
+-    override fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? =
+-        SLOT_COUNT.takeIf { MeituanMainNativeTabs.isNavigationRow(group) }
+-    override fun adjustNavigationScore(view: ViewGroup, idName: String?, score: Int): Int =
+-        if (idName == "bottom_tab_block" || MeituanMainNativeTabs.isNavigationRow(view)) score else 0
+-    override fun resolveNestedNavigation(navigation: ViewGroup): Pair<ViewGroup, Int>? {
+-        val row = MeituanMainNativeTabs.row(navigation) ?: return null
+-        return row to SLOT_COUNT
+-    }
+-}
+-
++package io.github.offlineglass.hook.adapters.meituan_main
++
++import android.view.View
++import android.view.ViewGroup
++import android.content.Context
++import io.github.offlineglass.hook.GlassHostLayout
++import io.github.offlineglass.hook.adapters.AppNavigationState
++import io.github.offlineglass.hook.adapters.AppNativeChromeController
++import io.github.offlineglass.hook.adapters.TargetAdapter
++import io.github.offlineglass.targets.TargetSpec
++import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.SLOT_COUNT
++import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
++
++/** The real Meituan tab row is nested under TabBlockV2. */
++internal object MeituanMainAdapter : TargetAdapter {
++    override val key = "meituan_main"
++    override val concentricIndicatorExpansion = true
++    override val concentricIndicatorExpansionGain = 1.6f
++    override val activeIndicatorDispersion = 0.40f
++    override val forceLightMode = true
++    override val hasPerFrameScene = true
++    override val updatesSceneDuringTapTransition = true
++    override val nativeSelectionReliable = true
++    override val ownsNavigationDrawing = true
++    override val skipNavigationSnapshot = true
++    override val foregroundNavigationOverSelection = true
++    override val usesNavigationOpticalMix = true
++    override val persistentNavigationOpticalMix = true
++    override val foregroundMaskInsetDp = 0f
++    override val ownsNavigationTap = true
++    override val managesNativeTabVisibility = true
++    override val commitSelectionAfterTap = true
++    override val accentColor: Int? = 0xFFFFC300.toInt()
++    override val reuseOpticalBlur = true
++    // Native routing is immediate; optical input follows the committed native page.
++    override val keepsBackdropDuringTapTransition = true
++    override val skipBackdropStableDelay = true
++    override val captureDuringLiveBackdrop = false
++    override val hideRedrawnNavigationSource = true
++    override val projectedNavigationScale = 1f
++    override val sourceCenterActionIndex = 2
++    override val suppressPlatformElevation = true
++    override val continuousIndicatorMask = true
++    override fun normalizeConfig(config: io.github.offlineglass.config.GlassConfig) =
++        config.copy(themeMode = io.github.offlineglass.config.GlassConfig.THEME_LIGHT, hiddenMask = config.hiddenMask or (1 shl VIDEO), detachedPublish = config.meituanDetachedXiaotuan)
++    override fun barLayout(config: io.github.offlineglass.config.GlassConfig, width: Int,
++        height: Int, density: Float, slots: Int): io.github.offlineglass.hook.adapters.AdapterBarLayout? {
++        if (!config.detachedPublish || slots != SLOT_COUNT || config.hiddenMask and 4 != 0 ||
++            height <= 0 || width <= height + 12f * density) return null
++        val navigation = listOf(0, 3, 4).filter { config.hiddenMask and (1 shl it) == 0 }
++        if (navigation.isEmpty()) return null
++        val actionLeft = width - height.toFloat()
++        return io.github.offlineglass.hook.adapters.AdapterBarLayout(
++            mainWidth = actionLeft - 12f * density, actionLeft = actionLeft,
++            actionSize = height.toFloat(), actionIndex = 2, navigationIndices = navigation,
++        )
++    }
++    override val sourceDefaultTranslationDp = -6f
++    override val sourceCenterTranslationDp = -2f
++    override val sourceCenterClipRatio = 0.7f
++    override val preserveNativeColorIndices = setOf(2)
++    override val selectionSettleMs = 220L
++    override fun scrollStopHideTab(selectedIndex: Int): Boolean = false
++    override fun createNavigationState(context: Context): AppNavigationState = MeituanMainNavigationState()
++    override fun createNavigationState(context: Context, host: GlassHostLayout): AppNavigationState =
++        MeituanMainNavigationState(host)
++    override fun resetScrollStopHideOnOtherTabs(): Boolean = true
++    override fun scrollStopHideDelayMs(selectedIndex: Int): Long = when (selectedIndex) {
++        3 -> 800L
++        4 -> 1_500L
++        else -> 1_000L
++    }
++    override fun createNativeChromeController(): AppNativeChromeController = MeituanMainNativeChrome()
++    override fun acceptsNavigationSource(navigation: ViewGroup): Boolean =
++        MeituanMainNativeTabs.isNavigationRow(navigation)
++    override fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? =
++        MeituanMainNativeTabs.cells(group)?.size?.takeIf { MeituanMainNativeTabs.isNavigationRow(group) }
++    override fun adjustNavigationScore(view: ViewGroup, idName: String?, score: Int): Int =
++        if (idName == "bottom_tab_block" || MeituanMainNativeTabs.isNavigationRow(view)) score else 0
++    override fun resolveNestedNavigation(navigation: ViewGroup): Pair<ViewGroup, Int>? {
++        val row = MeituanMainNativeTabs.row(navigation) ?: return null
++        val cells = MeituanMainNativeTabs.cells(row) ?: return null
++        MeituanMainNativeTabs.report(row, cells)
++        return row to cells.size
++    }
++    /** The persisted mask is authored for the five-slot bar; a bar without the
++     *  video slot has no bit at that position, so the stale bit must not hide
++     *  whatever tab now occupies slot 1. */
++    override fun navigationHiddenMask(mask: Int, slots: Int): Int =
++        if (slots == SLOT_COUNT) mask else mask and (1 shl VIDEO).inv()
++}
++
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNativeTabs.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNativeTabs.kt
+index 1e54f16..2d8c76f 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNativeTabs.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNativeTabs.kt
+@@ -1,138 +1,151 @@
+-package io.github.offlineglass.hook.adapters.meituan_main
+-
+-import android.graphics.drawable.Drawable
+-import android.os.SystemClock
+-import android.util.Log
+-import android.view.View
+-import android.view.ViewGroup
+-import java.util.WeakHashMap
+-import java.util.concurrent.ConcurrentHashMap
+-
+-/** Stable native artwork API + platform selection + a unique logical cell binding. */
+-internal object MeituanMainNativeTabs {
+-    data class Cell(val role: Int, val slot: View, val glyph: View, val button: View)
+-    data class Binding(val row: ViewGroup, val cells: List<Cell>) {
+-        fun valid(): Boolean {
+-            var index = 0
+-            for (position in 0 until row.childCount) {
+-                val slot = row.getChildAt(position)
+-                if (slot.visibility == View.GONE) continue
+-                val cell = cells.getOrNull(index++) ?: return false
+-                if (slot !== cell.slot || !cell.glyph.isAttachedToWindow ||
+-                    !cell.button.isAttachedToWindow || !below(cell.glyph, slot, rejectGone = true) ||
+-                    !below(cell.button, slot) || !cell.button.hasOnClickListeners()) return false
+-            }
+-            return index == cells.size
+-        }
+-    }
+-    private data class Failure(val reason: String, val childCount: Int, val nextProbe: Long)
+-    private val contracts = ConcurrentHashMap<Class<*>, Boolean>()
+-    private val bindings = WeakHashMap<ViewGroup, Binding>()
+-    private val observers = WeakHashMap<ViewGroup, Triple<android.view.ViewTreeObserver, android.view.ViewTreeObserver.OnGlobalLayoutListener, View.OnAttachStateChangeListener>>()
+-    private val active = WeakHashMap<ViewGroup, Boolean>()
+-    private val restorers = WeakHashMap<ViewGroup, () -> Unit>()
+-    private val failures = WeakHashMap<ViewGroup, Failure>()
+-    private fun below(child: View, parent: View, rejectGone: Boolean = false): Boolean {
+-        var current: View? = child
+-        while (current != null) {
+-            if (rejectGone && current.visibility == View.GONE) return false
+-            if (current === parent) return true
+-            current = current.parent as? View
+-        }
+-        return false
+-    }
+-    fun isTab(view: View): Boolean = contracts.getOrPut(view.javaClass) {
+-        MeituanMainTabContract.matches(view.javaClass, View::class.java, Drawable::class.java)
+-    }
+-    private fun slotTree(root: View): List<View> {
+-        val result = ArrayList<View>(); val queue = ArrayDeque<View>(); queue += root
+-        while (queue.isNotEmpty() && result.size < 64) {
+-            val view = queue.removeFirst()
+-            // Native scroll animations may hide a slot without changing its capability.
+-            result += view
+-            if (view is ViewGroup) for (i in 0 until view.childCount) queue += view.getChildAt(i)
+-        }
+-        return if (queue.isEmpty()) result else emptyList()
+-    }
+-    fun bind(row: ViewGroup?): Binding? {
+-        row ?: return null
+-        bindings[row]?.takeIf { it.valid() }?.let { return it }
+-        bindings.remove(row)
+-        if (!row.isAttachedToWindow || row.width <= 0 || row.height <= 0 ||
+-            row.childCount !in 4..MeituanMainTabContract.SLOT_COUNT) return null
+-        val now = SystemClock.uptimeMillis()
+-        val previous = failures[row]
+-        if (previous?.childCount == row.childCount && now < previous.nextProbe) return null
+-        val slots = (0 until row.childCount).map(row::getChildAt).filter { it.visibility != View.GONE }
+-        val cells = slots.mapNotNull { slot ->
+-            val nodes = slotTree(slot)
+-            val glyph = MeituanMainTabContract.unique(nodes.filter {
+-                it !is ViewGroup && it.width > 0 && it.height > 0 && isTab(it) &&
+-                    below(it, slot, rejectGone = true)
+-            }) ?: return@mapNotNull null
+-            // A wrapper listener is allowed only on the glyph's ancestor chain.
+-            // Nested competing listeners are ambiguous, never first-match fallbacks.
+-            val targets = nodes.filter { it.javaClass.name.startsWith("com.meituan.android.pt.homepage.tab.") && it.hasOnClickListeners() && below(glyph, it) }
+-            val target = MeituanMainTabContract.unique(targets) ?: return@mapNotNull null
+-            val title = runCatching { glyph.javaClass.getMethod("getTitle").invoke(glyph) as? String }.getOrNull()
+-            Cell(MeituanMainTabContract.role(title), slot, glyph, target)
+-        }
+-        val roles = cells.map { it.role }
+-        if (cells.size != slots.size || !MeituanMainTabContract.validRoles(roles)) {
+-            val reason = "unique navigation binding unavailable: slots=${slots.size}, roles=$roles"
+-            if (previous?.reason != reason) Log.w("MeituanBinding", reason)
+-            failures[row] = Failure(reason, row.childCount, now + 100L)
+-            return null
+-        }
+-        if (observers[row]?.first?.isAlive != true) {
+-            observers.remove(row)?.let { (_, _, detach) -> row.removeOnAttachStateChangeListener(detach) }
+-            val tree = row.viewTreeObserver
+-            val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+-                bindings[row]?.let { if (!it.valid()) bindings.remove(row) }
+-            }
+-            val detach = object : View.OnAttachStateChangeListener {
+-                override fun onViewAttachedToWindow(view: View) = Unit
+-                override fun onViewDetachedFromWindow(view: View) { release(row) }
+-            }
+-            tree.addOnGlobalLayoutListener(listener); row.addOnAttachStateChangeListener(detach)
+-            observers[row] = Triple(tree, listener, detach)
+-        }
+-        return Binding(row, cells).also { bindings[row] = it; failures.remove(row) }
+-    }
+-    fun row(block: ViewGroup): ViewGroup? {
+-        if (!isBlock(block)) return null
+-        return (0 until block.childCount).mapNotNull { block.getChildAt(it) as? ViewGroup }
+-            .filter { bind(it) != null }.singleOrNull()
+-    }
+-    private fun isBlock(view: View) =
+-        view.javaClass.name.startsWith("com.meituan.android.pt.homepage.tab.") &&
+-            runCatching { view.resources.getResourceEntryName(view.id) }.getOrNull() == "bottom_tab_block"
+-    fun isNavigationRow(source: ViewGroup): Boolean =
+-        (source.parent as? ViewGroup)?.let { row(it) === source } == true
+-    fun activated(row: ViewGroup?) = row != null && active[row] == true
+-    /** The content sibling of the same verified navigation block, excluding its artwork. */
+-    fun content(row: ViewGroup?): View? {
+-        if (bind(row) == null) return null
+-        val block = row?.parent as? ViewGroup ?: return null
+-        if (!isBlock(block)) return null
+-        val shell = block.parent as? ViewGroup ?: return null
+-        return (0 until shell.childCount).map(shell::getChildAt).filter {
+-            it !== block && runCatching { it.resources.getResourceEntryName(it.id) }.getOrNull() == "main"
+-        }.singleOrNull()
+-    }
+-    fun onRestore(row: ViewGroup, restore: () -> Unit) { restorers[row] = restore }
+-    fun activate(row: ViewGroup, enabled: Boolean) {
+-        active[row] = enabled
+-        if (!enabled) restorers.remove(row)?.invoke()
+-    }
+-    fun release(row: ViewGroup?, restoreNative: Boolean = false) {
+-        row ?: return
+-        if (restoreNative) activate(row, false)
+-        else restorers.remove(row)
+-        bindings.remove(row); active.remove(row); failures.remove(row)
+-        observers.remove(row)?.let { (tree, listener, detach) ->
+-            if (tree.isAlive) tree.removeOnGlobalLayoutListener(listener)
+-            row.removeOnAttachStateChangeListener(detach)
+-        }
+-    }
+-}
++package io.github.offlineglass.hook.adapters.meituan_main
++
++import android.graphics.drawable.Drawable
++import android.os.SystemClock
++import android.util.Log
++import android.view.View
++import android.view.ViewGroup
++import java.util.WeakHashMap
++import java.util.concurrent.ConcurrentHashMap
++
++/** Stable native artwork API + platform selection + a unique logical cell binding. */
++internal object MeituanMainNativeTabs {
++    data class Cell(val role: Int, val slot: View, val glyph: View, val button: View)
++    data class Binding(val row: ViewGroup, val cells: List<Cell>) {
++        fun valid(): Boolean {
++            var index = 0
++            for (position in 0 until row.childCount) {
++                val slot = row.getChildAt(position)
++                if (slot.visibility == View.GONE) continue
++                val cell = cells.getOrNull(index++) ?: return false
++                if (slot !== cell.slot || !cell.glyph.isAttachedToWindow ||
++                    !cell.button.isAttachedToWindow || !below(cell.glyph, slot, rejectGone = true) ||
++                    !below(cell.button, slot) || !cell.button.hasOnClickListeners()) return false
++            }
++            return index == cells.size
++        }
++    }
++    private data class Failure(val reason: String, val childCount: Int, val nextProbe: Long)
++    private val contracts = ConcurrentHashMap<Class<*>, Boolean>()
++    private val bindings = WeakHashMap<ViewGroup, Binding>()
++    private val observers = WeakHashMap<ViewGroup, Triple<android.view.ViewTreeObserver, android.view.ViewTreeObserver.OnGlobalLayoutListener, View.OnAttachStateChangeListener>>()
++    private val active = WeakHashMap<ViewGroup, Boolean>()
++    private val restorers = WeakHashMap<ViewGroup, () -> Unit>()
++    private val failures = WeakHashMap<ViewGroup, Failure>()
++    private fun below(child: View, parent: View, rejectGone: Boolean = false): Boolean {
++        var current: View? = child
++        while (current != null) {
++            if (rejectGone && current.visibility == View.GONE) return false
++            if (current === parent) return true
++            current = current.parent as? View
++        }
++        return false
++    }
++    fun isTab(view: View): Boolean = contracts.getOrPut(view.javaClass) {
++        MeituanMainTabContract.matches(view.javaClass, View::class.java, Drawable::class.java)
++    }
++    private fun slotTree(root: View): List<View> {
++        val result = ArrayList<View>(); val queue = ArrayDeque<View>(); queue += root
++        while (queue.isNotEmpty() && result.size < 64) {
++            val view = queue.removeFirst()
++            // Native scroll animations may hide a slot without changing its capability.
++            result += view
++            if (view is ViewGroup) for (i in 0 until view.childCount) queue += view.getChildAt(i)
++        }
++        return if (queue.isEmpty()) result else emptyList()
++    }
++    fun bind(row: ViewGroup?): Binding? {
++        row ?: return null
++        bindings[row]?.takeIf { it.valid() }?.let { return it }
++        bindings.remove(row)
++        if (!row.isAttachedToWindow || row.width <= 0 || row.height <= 0 ||
++            row.childCount !in 4..MeituanMainTabContract.SLOT_COUNT) return null
++        val now = SystemClock.uptimeMillis()
++        val previous = failures[row]
++        if (previous?.childCount == row.childCount && now < previous.nextProbe) return null
++        val slots = (0 until row.childCount).map(row::getChildAt).filter { it.visibility != View.GONE }
++        val cells = slots.mapNotNull { slot ->
++            val nodes = slotTree(slot)
++            val glyph = MeituanMainTabContract.unique(nodes.filter {
++                it !is ViewGroup && it.width > 0 && it.height > 0 && isTab(it) &&
++                    below(it, slot, rejectGone = true)
++            }) ?: return@mapNotNull null
++            // A wrapper listener is allowed only on the glyph's ancestor chain.
++            // Nested competing listeners are ambiguous, never first-match fallbacks.
++            val targets = nodes.filter { it.javaClass.name.startsWith("com.meituan.android.pt.homepage.tab.") && it.hasOnClickListeners() && below(glyph, it) }
++            val target = MeituanMainTabContract.unique(targets) ?: return@mapNotNull null
++            val title = runCatching { glyph.javaClass.getMethod("getTitle").invoke(glyph) as? String }.getOrNull()
++            Cell(MeituanMainTabContract.role(title), slot, glyph, target)
++        }
++        val roles = cells.map { it.role }
++        if (cells.size != slots.size || !MeituanMainTabContract.validRoles(roles)) {
++            val reason = "unique navigation binding unavailable: slots=${slots.size}, roles=$roles"
++            if (previous?.reason != reason) Log.w("MeituanBinding", reason)
++            failures[row] = Failure(reason, row.childCount, now + 100L)
++            return null
++        }
++        if (observers[row]?.first?.isAlive != true) {
++            observers.remove(row)?.let { (_, _, detach) -> row.removeOnAttachStateChangeListener(detach) }
++            val tree = row.viewTreeObserver
++            val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
++                bindings[row]?.let { if (!it.valid()) bindings.remove(row) }
++            }
++            val detach = object : View.OnAttachStateChangeListener {
++                override fun onViewAttachedToWindow(view: View) = Unit
++                override fun onViewDetachedFromWindow(view: View) { release(row) }
++            }
++            tree.addOnGlobalLayoutListener(listener); row.addOnAttachStateChangeListener(detach)
++            observers[row] = Triple(tree, listener, detach)
++        }
++        return Binding(row, cells).also { bindings[row] = it; failures.remove(row) }
++    }
++    /** Live cells of the verified row; the count is the row's slot count, not a
++     *  constant, because a release may drop a tab from the native bar. */
++    fun cells(row: ViewGroup?): List<Cell>? = bind(row)?.cells
++    /** One-shot structural report so an app change can be read from logcat. */
++    private val reportedRows = WeakHashMap<ViewGroup, Boolean>()
++    fun report(row: ViewGroup, cells: List<Cell>) {
++        if (reportedRows.put(row, true) == true) return
++        val detail = cells.joinToString(",") { cell ->
++            val title = runCatching { cell.glyph.javaClass.getMethod("getTitle").invoke(cell.glyph) as? String }.getOrNull()
++            "s${cell.slot.left}-${cell.slot.right}=role${cell.role}($title)"
++        }
++        Log.i("MeituanBinding", "navigation row slots=${cells.size} [$detail]")
++    }
++    fun row(block: ViewGroup): ViewGroup? {
++        if (!isBlock(block)) return null
++        return (0 until block.childCount).mapNotNull { block.getChildAt(it) as? ViewGroup }
++            .filter { bind(it) != null }.singleOrNull()
++    }
++    private fun isBlock(view: View) =
++        view.javaClass.name.startsWith("com.meituan.android.pt.homepage.tab.") &&
++            runCatching { view.resources.getResourceEntryName(view.id) }.getOrNull() == "bottom_tab_block"
++    fun isNavigationRow(source: ViewGroup): Boolean =
++        (source.parent as? ViewGroup)?.let { row(it) === source } == true
++    fun activated(row: ViewGroup?) = row != null && active[row] == true
++    /** The content sibling of the same verified navigation block, excluding its artwork. */
++    fun content(row: ViewGroup?): View? {
++        if (bind(row) == null) return null
++        val block = row?.parent as? ViewGroup ?: return null
++        if (!isBlock(block)) return null
++        val shell = block.parent as? ViewGroup ?: return null
++        return (0 until shell.childCount).map(shell::getChildAt).filter {
++            it !== block && runCatching { it.resources.getResourceEntryName(it.id) }.getOrNull() == "main"
++        }.singleOrNull()
++    }
++    fun onRestore(row: ViewGroup, restore: () -> Unit) { restorers[row] = restore }
++    fun activate(row: ViewGroup, enabled: Boolean) {
++        active[row] = enabled
++        if (!enabled) restorers.remove(row)?.invoke()
++    }
++    fun release(row: ViewGroup?, restoreNative: Boolean = false) {
++        row ?: return
++        if (restoreNative) activate(row, false)
++        else restorers.remove(row)
++        bindings.remove(row); active.remove(row); failures.remove(row)
++        observers.remove(row)?.let { (tree, listener, detach) ->
++            if (tree.isAlive) tree.removeOnGlobalLayoutListener(listener)
++            row.removeOnAttachStateChangeListener(detach)
++        }
++    }
++}
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNavigationState.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNavigationState.kt
+index 77df961..c41701f 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNavigationState.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainNavigationState.kt
+@@ -1,50 +1,52 @@
+-package io.github.offlineglass.hook.adapters.meituan_main
+-
+-import android.graphics.Canvas
+-import android.view.View
+-import android.view.ViewGroup
+-import io.github.offlineglass.hook.GlassHostLayout
+-import io.github.offlineglass.hook.adapters.AppNavigationState
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.SLOT_COUNT
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
+-
+-/** Cart geometry and native tab artwork belong exclusively to Meituan main. */
+-internal class MeituanMainNavigationState(private val pageHost: GlassHostLayout? = null) : AppNavigationState {
+-    private val binding = MeituanMainBinding()
+-    private val checkout = MeituanMainCheckoutController(binding)
+-    private val sceneSelector = MeituanMainSceneSelector(binding)
+-    private val profileSafety = MeituanMainProfileSafety(binding)
+-    private val profileWindow = MeituanMainProfileWindow()
+-
+-    private var nativeScene: View? = null
+-
+-    private var contentMotionUntil = 0L
+-    private var scrollObserver: android.view.ViewTreeObserver? = null
+-    private val scrollListener = android.view.ViewTreeObserver.OnScrollChangedListener { onContentScroll() }
+-    private val backdropState = MeituanMainBackdropState()
+-    private var lastScene: View? = null
+-    private var lastSceneRevision = -1
+-    private var sceneGeometry = ""
+-    private val scenePosition = IntArray(2)
+-    private val hostPosition = IntArray(2)
+-    private var sceneDx = Int.MIN_VALUE
+-    private var sceneDy = Int.MIN_VALUE
+-
+-    override fun resolveSelectedIndex(source: ViewGroup?, slotCount: Int): Int? =
+-        nativeSelected(source, slotCount)
+-
+-    private fun nativeSelected(source: ViewGroup?, slotCount: Int): Int? {
+-        if (slotCount != SLOT_COUNT) return null
+-        val native = MeituanMainNativeTabs.bind(source) ?: return null
+-        return native.cells.singleOrNull { it.glyph.isSelected }?.role
+-    }
+-
+-    override fun performTap(host: View, source: ViewGroup?, index: Int, slotCount: Int): Boolean =
+-        dispatchLive(source, index, slotCount)
+-
++package io.github.offlineglass.hook.adapters.meituan_main
++
++import android.graphics.Canvas
++import android.view.View
++import android.view.ViewGroup
++import io.github.offlineglass.hook.GlassHostLayout
++import io.github.offlineglass.hook.adapters.AppNavigationState
++
++/** Cart geometry and native tab artwork belong exclusively to Meituan main. */
++internal class MeituanMainNavigationState(private val pageHost: GlassHostLayout? = null) : AppNavigationState {
++    private val binding = MeituanMainBinding()
++    private val checkout = MeituanMainCheckoutController(binding)
++    private val sceneSelector = MeituanMainSceneSelector(binding)
++    private val profileSafety = MeituanMainProfileSafety(binding)
++    private val profileWindow = MeituanMainProfileWindow()
++
++    private var nativeScene: View? = null
++
++    private var contentMotionUntil = 0L
++    private var scrollObserver: android.view.ViewTreeObserver? = null
++    private val scrollListener = android.view.ViewTreeObserver.OnScrollChangedListener { onContentScroll() }
++    private val backdropState = MeituanMainBackdropState()
++    private var lastScene: View? = null
++    private var lastSceneRevision = -1
++    private var sceneGeometry = ""
++    private val scenePosition = IntArray(2)
++    private val hostPosition = IntArray(2)
++    private var sceneDx = Int.MIN_VALUE
++    private var sceneDy = Int.MIN_VALUE
++
++    override fun resolveSelectedIndex(source: ViewGroup?, slotCount: Int): Int? =
++        nativeSelected(source, slotCount)
++
++    private fun nativeSelected(source: ViewGroup?, slotCount: Int): Int? {
++        val native = MeituanMainNativeTabs.bind(source) ?: return null
++        // The framework speaks in slot positions, not roles: a bar that dropped the
++        // video tab still has four slots, so the role value can no longer index them.
++        if (native.cells.size != slotCount) return null
++        return native.cells.indexOfFirst { it.glyph.isSelected }.takeIf { it >= 0 }
++    }
++
++    override fun performTap(host: View, source: ViewGroup?, index: Int, slotCount: Int): Boolean =
++        dispatchLive(source, index, slotCount)
++
+     private fun dispatchLive(source: ViewGroup?, index: Int, count: Int): Boolean {
+-        if (count != SLOT_COUNT || index !in 0 until count || index == VIDEO) return false
+-        val button = MeituanMainNativeTabs.bind(source)?.cells?.firstOrNull { it.role == index }?.button
++        if (index !in 0 until count) return false
++        val cells = MeituanMainNativeTabs.cells(source) ?: return false
++        if (cells.size != count) return false
++        val button = cells.getOrNull(index)?.button
+             ?.takeIf { it.isAttachedToWindow && it.isEnabled } ?: return false
+ 
+         val handled = button.performClick()
+@@ -53,169 +55,169 @@ internal class MeituanMainNavigationState(private val pageHost: GlassHostLayout?
+         return handled
+     }
+ 
+-    override fun resolveBackdropScene(host: View): View? = nativeScene ?: sceneSelector.samplingRoot
+-    override fun skipLiveBackdrop(selectedIndex: Int): Boolean = nativeScene == null
+-    override fun needsFreshSoftwareBackdrop(): Boolean =
+-        nativeScene == null && sceneSelector.samplingRoot?.let {
+-            it.isAttachedToWindow && backdropState.needsSample(it.isDirty)
+-        } == true
+-    override fun onSoftwareBackdropRecorded() = backdropState.recorded()
+-    override fun onLiveBackdropRecorded(selectedIndex: Int) = backdropState.recorded()
+-    override fun backdropSceneViews(content: ViewGroup, hostIndex: Int): List<View>? =
+-        (nativeScene)?.let { listOf(it) }
+-
+-    override fun onHostFrame(host: View) {
+-        val glass = host as? GlassHostLayout ?: return
+-        val committed = nativeSelected(glass.adapterNavigationSource, glass.adapterSlotCount)
+-        if (committed != null && backdropState.select(committed)) {
+-            glass.invalidateOpticalSceneForAdapter()
+-            glass.invalidateOpticalBackdropForAdapter()
+-        }
+-        val index = committed ?: glass.navigationIndex
+-        nativeScene = sceneSelector.pick(glass, index, unsafeChannel = false)
+-
+-        if (scrollObserver == null) scrollObserver = glass.rootView.viewTreeObserver.also {
+-            it.addOnScrollChangedListener(scrollListener)
+-        }
+-        val scene = nativeScene
+-        scene?.getLocationInWindow(scenePosition)
+-        glass.getLocationInWindow(hostPosition)
+-        val dx = scenePosition[0] - hostPosition[0]
+-        val dy = scenePosition[1] - hostPosition[1]
+-        if (sceneDx == Int.MIN_VALUE || kotlin.math.abs(dx - sceneDx) > 1) sceneDx = dx
+-        if (sceneDy == Int.MIN_VALUE || kotlin.math.abs(dy - sceneDy) > 1) sceneDy = dy
+-        val geometry = "${glass.width}:${glass.height}:${scene?.width}:${scene?.height}:$sceneDx:$sceneDy"
+-        if (scene !== lastScene || lastSceneRevision != index || geometry != sceneGeometry) {
+-            lastScene = scene; lastSceneRevision = index; sceneGeometry = geometry
+-            glass.invalidateOpticalSceneForAdapter()
+-        }
+-
+-    }
+-
+-    override fun onContentScroll() {
+-        contentMotionUntil = android.os.SystemClock.uptimeMillis()
+-        pageHost?.postInvalidateOnAnimation()
+-    }
+-
+-    override fun onHostWindowFocusChanged(hasFocus: Boolean) {
+-        sceneSelector.onFocusChanged(hasFocus)
+-
+-    }
+-
+-    override fun onHostDetached() {
+-        backdropState.reset()
+-        profileWindow.restore()
+-        profileSafety.restore()
+-        scrollObserver?.takeIf { it.isAlive }?.removeOnScrollChangedListener(scrollListener)
+-        scrollObserver = null
+-        sceneSelector.detach(); nativeScene = null
+-        MeituanMainNativeTabs.release(takeoverRow); takeoverRow = null
+-        checkout.release(); binding.release()
+-    }
+-
+-
+-    override fun suppressNativeChromeEarly(source: ViewGroup?) {
+-        val host = pageHost ?: return
+-        if (!tabs.ready) return
+-        checkout.update(host, host.adapterSelectedIndex, false,
+-            null)
+-    }
+-
+-    override fun adjustFloatingActions(host: View, source: ViewGroup?) {
+-        val glass = host as? GlassHostLayout ?: return
+-        if (!tabs.ready) return
+-        checkout.update(glass, glass.adapterSelectedIndex, false,
+-            null)
+-    }
+-
+-    private val tabs = MeituanMainStateArtwork()
+-    private var takeoverRow: ViewGroup? = null
+-    override val readyForDrawing: Boolean get() = tabs.ready
+-    override fun drawsNavigationContent(): Boolean = tabs.ready
+-    override fun allowsHostTouch(): Boolean = tabs.ready
+-    override fun beforeHostDraw(host: View, source: ViewGroup?): Boolean = tabs.ready
+-    override fun hostChromeAlpha(host: View, selectedIndex: Int): Float = if (tabs.ready) 1f else 0f
+-    override fun suppressRedrawnSource(): Boolean = true
+-    private fun prepareTakeover(source: ViewGroup?): Boolean {
+-        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) return false
+-        // Feed relayout is not a user disable. Keep ownership and the last
+-        // verified artwork while waiting for a replacement source.
+-        if (source == null || MeituanMainNativeTabs.bind(source) == null) return false
+-        takeoverRow = source
+-        MeituanMainNativeTabs.activate(source, true)
+-        return tabs.prepare(source)
+-    }
+-    override fun prepare(source: ViewGroup?, schedule: (Long, () -> Unit) -> Unit) {
+-        prepareTakeover(source)
+-    }
+-
+-    override fun draw(canvas: Canvas, frame: io.github.offlineglass.hook.adapters.AdapterNavigationFrame) {
+-        tabs.draw(canvas, frame, active = frame.hideSelectedForOptics)
+-    }
+-
+-    override fun drawForeground(canvas: Canvas, frame: io.github.offlineglass.hook.adapters.AdapterNavigationFrame,
+-        selectionPath: android.graphics.Path, drawSource: () -> Unit): Boolean {
+-        val artworkFrame = frame.copy(extraScale = frame.extraScale *
+-            (frame.height / (64f * frame.density)).coerceIn(.875f, 1f))
+-        if (selectionPath.isEmpty) { tabs.draw(canvas, artworkFrame, active = false); return true }
+-        val outside = canvas.save()
+-        canvas.clipOutPath(selectionPath)
+-        // Foreground state depends on the lens geometry, never on the delayed
+-        // native page selection or the optical-source capture flag.
+-        tabs.draw(canvas, artworkFrame, active = false)
+-        canvas.restoreToCount(outside)
+-        val plain = 1f - frame.navigationOpticalMix.coerceIn(0f, 1f)
+-        if (plain > 0f) {
+-            val inside = canvas.save()
+-            canvas.clipPath(selectionPath)
+-            canvas.saveLayerAlpha(0f, 0f, frame.width.toFloat(), frame.height.toFloat(), (plain * 255).toInt())
+-            tabs.draw(canvas, artworkFrame, active = true)
+-            canvas.restoreToCount(inside)
+-        }
+-        return true
+-    }
+-
+-    override fun includeNavigationInIndicatorScene(surfaceActive: Boolean) = true
+-    private var currentSelection = -1
+-    override fun onHostPreDraw(host: View, source: ViewGroup?, selected: () -> Int,
+-        enabled: Boolean, density: Float, barHeightPx: Int, surfaceColor: () -> Int) {
+-        if (!enabled) {
+-            (source ?: takeoverRow)?.let {
+-                MeituanMainNativeTabs.release(it, restoreNative = true)
+-                it.alpha = 1f
+-            }
+-            takeoverRow = null; tabs.clear()
+-            return
+-        }
+-        currentSelection = selected()
+-        val changed = prepareTakeover(source)
+-        profileSafety.update(host, enabled && tabs.ready && currentSelection == 4)
+-        if (changed) (host as? GlassHostLayout)?.invalidateProjectionCache()
+-    }
+-    override fun forceNavigationBarImmersed(host: GlassHostLayout): Boolean? {
+-        // Window fitting belongs to the committed native page, not the pending
+-        // preview target: never resize the window in the middle of the spring.
+-        val committed = nativeSelected(host.adapterNavigationSource, host.adapterSlotCount)
+-            ?: host.adapterSelectedIndex
+-        val profile = host.config.enabled && tabs.ready &&
+-            committed == 4
+-        profileWindow.update(host, profile)
+-        return if (profile) true else null
+-    }
+-
+-    override fun dispose() {
+-        profileWindow.restore()
+-        profileSafety.restore()
+-        scrollObserver?.takeIf { it.isAlive }?.removeOnScrollChangedListener(scrollListener)
+-        scrollObserver = null
+-        sceneSelector.detach(); nativeScene = null
+-        checkout.release(); tabs.clear(); binding.release()
+-        MeituanMainNativeTabs.release(pageHost?.adapterNavigationSource,
+-            restoreNative = pageHost?.config?.enabled == false)
+-    }
+-
+-}
+-
+-
+-
+-
++    override fun resolveBackdropScene(host: View): View? = nativeScene ?: sceneSelector.samplingRoot
++    override fun skipLiveBackdrop(selectedIndex: Int): Boolean = nativeScene == null
++    override fun needsFreshSoftwareBackdrop(): Boolean =
++        nativeScene == null && sceneSelector.samplingRoot?.let {
++            it.isAttachedToWindow && backdropState.needsSample(it.isDirty)
++        } == true
++    override fun onSoftwareBackdropRecorded() = backdropState.recorded()
++    override fun onLiveBackdropRecorded(selectedIndex: Int) = backdropState.recorded()
++    override fun backdropSceneViews(content: ViewGroup, hostIndex: Int): List<View>? =
++        (nativeScene)?.let { listOf(it) }
++
++    override fun onHostFrame(host: View) {
++        val glass = host as? GlassHostLayout ?: return
++        val committed = nativeSelected(glass.adapterNavigationSource, glass.adapterSlotCount)
++        if (committed != null && backdropState.select(committed)) {
++            glass.invalidateOpticalSceneForAdapter()
++            glass.invalidateOpticalBackdropForAdapter()
++        }
++        val index = committed ?: glass.navigationIndex
++        nativeScene = sceneSelector.pick(glass, index, unsafeChannel = false)
++
++        if (scrollObserver == null) scrollObserver = glass.rootView.viewTreeObserver.also {
++            it.addOnScrollChangedListener(scrollListener)
++        }
++        val scene = nativeScene
++        scene?.getLocationInWindow(scenePosition)
++        glass.getLocationInWindow(hostPosition)
++        val dx = scenePosition[0] - hostPosition[0]
++        val dy = scenePosition[1] - hostPosition[1]
++        if (sceneDx == Int.MIN_VALUE || kotlin.math.abs(dx - sceneDx) > 1) sceneDx = dx
++        if (sceneDy == Int.MIN_VALUE || kotlin.math.abs(dy - sceneDy) > 1) sceneDy = dy
++        val geometry = "${glass.width}:${glass.height}:${scene?.width}:${scene?.height}:$sceneDx:$sceneDy"
++        if (scene !== lastScene || lastSceneRevision != index || geometry != sceneGeometry) {
++            lastScene = scene; lastSceneRevision = index; sceneGeometry = geometry
++            glass.invalidateOpticalSceneForAdapter()
++        }
++
++    }
++
++    override fun onContentScroll() {
++        contentMotionUntil = android.os.SystemClock.uptimeMillis()
++        pageHost?.postInvalidateOnAnimation()
++    }
++
++    override fun onHostWindowFocusChanged(hasFocus: Boolean) {
++        sceneSelector.onFocusChanged(hasFocus)
++
++    }
++
++    override fun onHostDetached() {
++        backdropState.reset()
++        profileWindow.restore()
++        profileSafety.restore()
++        scrollObserver?.takeIf { it.isAlive }?.removeOnScrollChangedListener(scrollListener)
++        scrollObserver = null
++        sceneSelector.detach(); nativeScene = null
++        MeituanMainNativeTabs.release(takeoverRow); takeoverRow = null
++        checkout.release(); binding.release()
++    }
++
++
++    override fun suppressNativeChromeEarly(source: ViewGroup?) {
++        val host = pageHost ?: return
++        if (!tabs.ready) return
++        checkout.update(host, host.adapterSelectedIndex, false,
++            null)
++    }
++
++    override fun adjustFloatingActions(host: View, source: ViewGroup?) {
++        val glass = host as? GlassHostLayout ?: return
++        if (!tabs.ready) return
++        checkout.update(glass, glass.adapterSelectedIndex, false,
++            null)
++    }
++
++    private val tabs = MeituanMainStateArtwork()
++    private var takeoverRow: ViewGroup? = null
++    override val readyForDrawing: Boolean get() = tabs.ready
++    override fun drawsNavigationContent(): Boolean = tabs.ready
++    override fun allowsHostTouch(): Boolean = tabs.ready
++    override fun beforeHostDraw(host: View, source: ViewGroup?): Boolean = tabs.ready
++    override fun hostChromeAlpha(host: View, selectedIndex: Int): Float = if (tabs.ready) 1f else 0f
++    override fun suppressRedrawnSource(): Boolean = true
++    private fun prepareTakeover(source: ViewGroup?): Boolean {
++        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) return false
++        // Feed relayout is not a user disable. Keep ownership and the last
++        // verified artwork while waiting for a replacement source.
++        if (source == null || MeituanMainNativeTabs.bind(source) == null) return false
++        takeoverRow = source
++        MeituanMainNativeTabs.activate(source, true)
++        return tabs.prepare(source)
++    }
++    override fun prepare(source: ViewGroup?, schedule: (Long, () -> Unit) -> Unit) {
++        prepareTakeover(source)
++    }
++
++    override fun draw(canvas: Canvas, frame: io.github.offlineglass.hook.adapters.AdapterNavigationFrame) {
++        tabs.draw(canvas, frame, active = frame.hideSelectedForOptics)
++    }
++
++    override fun drawForeground(canvas: Canvas, frame: io.github.offlineglass.hook.adapters.AdapterNavigationFrame,
++        selectionPath: android.graphics.Path, drawSource: () -> Unit): Boolean {
++        val artworkFrame = frame.copy(extraScale = frame.extraScale *
++            (frame.height / (64f * frame.density)).coerceIn(.875f, 1f))
++        if (selectionPath.isEmpty) { tabs.draw(canvas, artworkFrame, active = false); return true }
++        val outside = canvas.save()
++        canvas.clipOutPath(selectionPath)
++        // Foreground state depends on the lens geometry, never on the delayed
++        // native page selection or the optical-source capture flag.
++        tabs.draw(canvas, artworkFrame, active = false)
++        canvas.restoreToCount(outside)
++        val plain = 1f - frame.navigationOpticalMix.coerceIn(0f, 1f)
++        if (plain > 0f) {
++            val inside = canvas.save()
++            canvas.clipPath(selectionPath)
++            canvas.saveLayerAlpha(0f, 0f, frame.width.toFloat(), frame.height.toFloat(), (plain * 255).toInt())
++            tabs.draw(canvas, artworkFrame, active = true)
++            canvas.restoreToCount(inside)
++        }
++        return true
++    }
++
++    override fun includeNavigationInIndicatorScene(surfaceActive: Boolean) = true
++    private var currentSelection = -1
++    override fun onHostPreDraw(host: View, source: ViewGroup?, selected: () -> Int,
++        enabled: Boolean, density: Float, barHeightPx: Int, surfaceColor: () -> Int) {
++        if (!enabled) {
++            (source ?: takeoverRow)?.let {
++                MeituanMainNativeTabs.release(it, restoreNative = true)
++                it.alpha = 1f
++            }
++            takeoverRow = null; tabs.clear()
++            return
++        }
++        currentSelection = selected()
++        val changed = prepareTakeover(source)
++        profileSafety.update(host, enabled && tabs.ready && currentSelection == 4)
++        if (changed) (host as? GlassHostLayout)?.invalidateProjectionCache()
++    }
++    override fun forceNavigationBarImmersed(host: GlassHostLayout): Boolean? {
++        // Window fitting belongs to the committed native page, not the pending
++        // preview target: never resize the window in the middle of the spring.
++        val committed = nativeSelected(host.adapterNavigationSource, host.adapterSlotCount)
++            ?: host.adapterSelectedIndex
++        val profile = host.config.enabled && tabs.ready &&
++            committed == 4
++        profileWindow.update(host, profile)
++        return if (profile) true else null
++    }
++
++    override fun dispose() {
++        profileWindow.restore()
++        profileSafety.restore()
++        scrollObserver?.takeIf { it.isAlive }?.removeOnScrollChangedListener(scrollListener)
++        scrollObserver = null
++        sceneSelector.detach(); nativeScene = null
++        checkout.release(); tabs.clear(); binding.release()
++        MeituanMainNativeTabs.release(pageHost?.adapterNavigationSource,
++            restoreNative = pageHost?.config?.enabled == false)
++    }
++
++}
++
++
++
++
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainStateArtwork.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainStateArtwork.kt
+index b1690d5..5a44ae2 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainStateArtwork.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainStateArtwork.kt
+@@ -1,151 +1,154 @@
+-package io.github.offlineglass.hook.adapters.meituan_main
+-
+-import android.graphics.Bitmap
+-import android.graphics.Canvas
+-import android.graphics.drawable.Drawable
+-import android.graphics.drawable.StateListDrawable
+-import android.graphics.Rect
+-import android.os.Looper
+-import android.view.View
+-import android.view.ViewGroup
+-import io.github.offlineglass.hook.compat.XposedHelpers
+-import io.github.offlineglass.hook.adapters.AdapterNavigationFrame
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.SLOT_COUNT
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.XIAOTUAN
+-
+-/** Two immutable visual states, independent of the real page selection.
+- * Android setSelected dispatches to the native visual-state implementation.
+- * Capture is UI-only and restores native flags before any event can dispatch. */
+-internal class MeituanMainStateArtwork {
+-    private data class Pair(val idle: MeituanMainTabsRenderer, val active: MeituanMainTabsRenderer,
+-        val width: Int, val height: Int)
+-    @Volatile private var pair: Pair? = null
+-    private var source: ViewGroup? = null
+-    private var signature = Long.MIN_VALUE
+-    private var attemptedSource: ViewGroup? = null
+-    private var attemptedSignature = Long.MIN_VALUE
+-    val ready: Boolean get() = pair != null
+-    private var issue: String? = null
+-    private fun failed(reason: String): Boolean {
+-        // Keep the last verified complete frame through temporary native layout loss.
+-        if (issue != reason) android.util.Log.w("MeituanBinding", reason)
+-        issue = reason
+-        return false
+-    }
+-
+-    private fun setCaptureState(glyph: View, active: Boolean) {
+-        glyph.isSelected = active
+-        check(glyph.isSelected == active) { "native selected property did not commit" }
+-        glyph.refreshDrawableState()
+-        // StateListDrawable can retain its outgoing selected image during a
+-        // fade. A cached idle frame must contain the terminal idle art, never
+-        // an in-flight blend that can outlive the native transition forever.
+-        for (getter in arrayOf("getIcon", "getBadgeIcon", "getBadge")) {
+-            val drawable = runCatching { XposedHelpers.callMethod(glyph, getter) as? Drawable }.getOrNull()
+-                ?: continue
+-            drawable.state = glyph.drawableState
+-            drawable.jumpToCurrentState()
+-        }
+-        glyph.jumpDrawablesToCurrentState()
+-    }
+-
+-    fun prepare(row: ViewGroup?): Boolean {
+-        if (Looper.myLooper() != Looper.getMainLooper()) return false
+-        if (row == null || row.width <= 0 || row.height <= 0)
+-            return failed("native navigation source missing or not laid out")
+-        if (source !== row) { signature = Long.MIN_VALUE }
+-        val native = MeituanMainNativeTabs.bind(row) ?: return failed("native navigation binding unavailable")
+-        val cells = native.cells.filter { it.role != VIDEO }
+-        val bounds = cells.associate { cell ->
+-            cell.role to Rect(cell.slot.left, 0, cell.slot.right, row.height)
+-        }
+-        if (bounds.values.any { it.left < 0 || it.right > row.width || it.isEmpty } ||
+-            bounds.values.sortedBy { it.left }.zipWithNext().any { (left, right) -> left.right > right.left })
+-            return failed("native navigation cell bounds unavailable or overlapping")
+-        var key = row.width.toLong() * 31 + row.height
+-        for (cell in cells) {
+-            val glyph = cell.glyph
+-            key = key * 31 + cell.role
+-            key = key * 31 + bounds.getValue(cell.role).hashCode()
+-            key = key * 31 + System.identityHashCode(glyph)
+-            key = key * 31 + cell.slot.visibility
+-            key = key * 31 + glyph.visibility
+-            key = key * 31 + glyph.width
+-            key = key * 31 + glyph.height
+-            val icon = runCatching { XposedHelpers.callMethod(glyph, "getIcon") as? android.graphics.drawable.Drawable }.getOrNull()
+-            key = key * 31 + System.identityHashCode(icon)
+-            key = key * 31 + System.identityHashCode(icon?.current)
+-            key = key * 31 + if (glyph.isSelected) 1 else 0
+-            key = key * 31 + (if (icon is StateListDrawable) icon.stateCount else 0)
+-            key = key * 31 + (runCatching { XposedHelpers.callMethod(glyph, "getTitle")?.hashCode() }.getOrNull() ?: 0)
+-            key = key * 31 + (runCatching { XposedHelpers.callMethod(glyph, "getBadgeText")?.hashCode() }.getOrNull() ?: 0)
+-            key = key * 31 + System.identityHashCode(runCatching { XposedHelpers.callMethod(glyph, "getBadgeIcon") }.getOrNull())
+-        }
+-        if (source === row && signature == key && pair != null) return false
+-        // A failed capture is retried only when its native inputs change,
+-        // never continuously as a compatibility fallback during scrolling.
+-        if (attemptedSource === row && attemptedSignature == key) return false
+-        attemptedSource = row; attemptedSignature = key
+-        val selected = cells.map { it.glyph.isSelected }
+-        val alpha = row.alpha
+-        var restored = true
+-        val result = runCatching {
+-            row.alpha = 1f
+-            fun capture(active: Boolean): MeituanMainTabsRenderer {
+-                cells.forEach { cell ->
+-                    // Xiaotuan is a branded action: retain its complete native art.
+-                    if (cell.role != XIAOTUAN) setCaptureState(cell.glyph, active)
+-                }
+-                val bitmap = Bitmap.createBitmap(row.width, row.height, Bitmap.Config.ARGB_8888)
+-                // The native wrapper owns delegated artwork/animation. Drawing
+-                // its leaf directly bypasses that strategy and can yield blank art.
+-                row.draw(Canvas(bitmap))
+-                return MeituanMainTabsRenderer().apply {
+-                    check(accept(bitmap, bounds)) { "native artwork missing from a visible role" }
+-                }
+-            }
+-            Pair(capture(false), capture(true), row.width, row.height)
+-        }
+-        try {
+-            cells.forEachIndexed { index, cell ->
+-                if (cell.role != XIAOTUAN) try {
+-                    setCaptureState(cell.glyph, selected[index])
+-                } catch (error: Exception) {
+-                    restored = false
+-                    android.util.Log.e("MeituanBinding", "native selected-state restoration failed; takeover cancelled", error)
+-                }
+-            }
+-        } finally { row.alpha = alpha }
+-        if (!restored) return failed("native state restoration could not be verified")
+-        val captured = result.getOrElse { return failed("native artwork capture failed: ${it.javaClass.simpleName}") }
+-        pair = captured; source = row; signature = key; issue = null
+-        return true
+-    }
+-
+-    fun draw(canvas: Canvas, frame: AdapterNavigationFrame, active: Boolean) {
+-        val art = pair ?: return
+-        val renderer = if (active) art.active else art.idle
+-        val referenceWidth = art.width.toFloat() / SLOT_COUNT
+-        val scale = minOf(frame.slotWidth / referenceWidth, frame.height / art.height.toFloat()) * frame.extraScale
+-        frame.barLayout?.takeIf { !active }?.let { layout ->
+-            renderer.draw(canvas, layout.actionIndex, layout.actionLeft + layout.actionSize / 2f,
+-                frame.height / 2f, minOf(layout.actionSize / referenceWidth,
+-                    frame.height / art.height.toFloat()) * frame.extraScale,
+-                maxIconSize = layout.actionSize * .78f)
+-        }
+-        frame.enabledIndices.forEachIndexed { slot, index ->
+-            val left = 4f * frame.density + slot * frame.slotWidth
+-            val save = canvas.save()
+-            canvas.clipRect(left, 0f, left + frame.slotWidth, frame.height.toFloat())
+-            renderer.draw(canvas, index, left + frame.slotWidth / 2f, frame.height / 2f, scale,
+-                iconOnly = frame.iconOnly)
+-            canvas.restoreToCount(save)
+-        }
+-    }
+-
+-    fun clear() {
+-        pair = null; source = null; signature = Long.MIN_VALUE
+-        attemptedSource = null; attemptedSignature = Long.MIN_VALUE
+-    }
+-}
++package io.github.offlineglass.hook.adapters.meituan_main
++
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.drawable.Drawable
++import android.graphics.drawable.StateListDrawable
++import android.graphics.Rect
++import android.os.Looper
++import android.view.View
++import android.view.ViewGroup
++import io.github.offlineglass.hook.compat.XposedHelpers
++import io.github.offlineglass.hook.adapters.AdapterNavigationFrame
++import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
++import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.XIAOTUAN
++
++/** Two immutable visual states, independent of the real page selection.
++ * Android setSelected dispatches to the native visual-state implementation.
++ * Capture is UI-only and restores native flags before any event can dispatch. */
++internal class MeituanMainStateArtwork {
++    private data class Pair(val idle: MeituanMainTabsRenderer, val active: MeituanMainTabsRenderer,
++        val width: Int, val height: Int, val slots: Int)
++    @Volatile private var pair: Pair? = null
++    private var source: ViewGroup? = null
++    private var signature = Long.MIN_VALUE
++    private var attemptedSource: ViewGroup? = null
++    private var attemptedSignature = Long.MIN_VALUE
++    val ready: Boolean get() = pair != null
++    private var issue: String? = null
++    private fun failed(reason: String): Boolean {
++        // Keep the last verified complete frame through temporary native layout loss.
++        if (issue != reason) android.util.Log.w("MeituanBinding", reason)
++        issue = reason
++        return false
++    }
++
++    private fun setCaptureState(glyph: View, active: Boolean) {
++        glyph.isSelected = active
++        check(glyph.isSelected == active) { "native selected property did not commit" }
++        glyph.refreshDrawableState()
++        // StateListDrawable can retain its outgoing selected image during a
++        // fade. A cached idle frame must contain the terminal idle art, never
++        // an in-flight blend that can outlive the native transition forever.
++        for (getter in arrayOf("getIcon", "getBadgeIcon", "getBadge")) {
++            val drawable = runCatching { XposedHelpers.callMethod(glyph, getter) as? Drawable }.getOrNull()
++                ?: continue
++            drawable.state = glyph.drawableState
++            drawable.jumpToCurrentState()
++        }
++        glyph.jumpDrawablesToCurrentState()
++    }
++
++    fun prepare(row: ViewGroup?): Boolean {
++        if (Looper.myLooper() != Looper.getMainLooper()) return false
++        if (row == null || row.width <= 0 || row.height <= 0)
++            return failed("native navigation source missing or not laid out")
++        if (source !== row) { signature = Long.MIN_VALUE }
++        val native = MeituanMainNativeTabs.bind(row) ?: return failed("native navigation binding unavailable")
++        val cells = native.cells.filter { it.role != VIDEO }
++        // Slot positions, not roles: the framework draws by slot index, and a bar
++        // that dropped the video tab has four slots while the roles stay 0..4.
++        val bounds = cells.mapIndexed { index, cell ->
++            index to Rect(cell.slot.left, 0, cell.slot.right, row.height)
++        }.toMap()
++        val branded = cells.mapIndexedNotNull { index, cell -> index.takeIf { cell.role == XIAOTUAN } }.toSet()
++        if (bounds.values.any { it.left < 0 || it.right > row.width || it.isEmpty } ||
++            bounds.values.sortedBy { it.left }.zipWithNext().any { (left, right) -> left.right > right.left })
++            return failed("native navigation cell bounds unavailable or overlapping")
++        var key = row.width.toLong() * 31 + row.height
++        for (cell in cells) {
++            val glyph = cell.glyph
++            val slotIndex = cells.indexOf(cell)
++            key = key * 31 + cell.role
++            key = key * 31 + bounds.getValue(slotIndex).hashCode()
++            key = key * 31 + System.identityHashCode(glyph)
++            key = key * 31 + cell.slot.visibility
++            key = key * 31 + glyph.visibility
++            key = key * 31 + glyph.width
++            key = key * 31 + glyph.height
++            val icon = runCatching { XposedHelpers.callMethod(glyph, "getIcon") as? android.graphics.drawable.Drawable }.getOrNull()
++            key = key * 31 + System.identityHashCode(icon)
++            key = key * 31 + System.identityHashCode(icon?.current)
++            key = key * 31 + if (glyph.isSelected) 1 else 0
++            key = key * 31 + (if (icon is StateListDrawable) icon.stateCount else 0)
++            key = key * 31 + (runCatching { XposedHelpers.callMethod(glyph, "getTitle")?.hashCode() }.getOrNull() ?: 0)
++            key = key * 31 + (runCatching { XposedHelpers.callMethod(glyph, "getBadgeText")?.hashCode() }.getOrNull() ?: 0)
++            key = key * 31 + System.identityHashCode(runCatching { XposedHelpers.callMethod(glyph, "getBadgeIcon") }.getOrNull())
++        }
++        if (source === row && signature == key && pair != null) return false
++        // A failed capture is retried only when its native inputs change,
++        // never continuously as a compatibility fallback during scrolling.
++        if (attemptedSource === row && attemptedSignature == key) return false
++        attemptedSource = row; attemptedSignature = key
++        val selected = cells.map { it.glyph.isSelected }
++        val alpha = row.alpha
++        var restored = true
++        val result = runCatching {
++            row.alpha = 1f
++            fun capture(active: Boolean): MeituanMainTabsRenderer {
++                cells.forEach { cell ->
++                    // Xiaotuan is a branded action: retain its complete native art.
++                    if (cell.role != XIAOTUAN) setCaptureState(cell.glyph, active)
++                }
++                val bitmap = Bitmap.createBitmap(row.width, row.height, Bitmap.Config.ARGB_8888)
++                // The native wrapper owns delegated artwork/animation. Drawing
++                // its leaf directly bypasses that strategy and can yield blank art.
++                row.draw(Canvas(bitmap))
++                return MeituanMainTabsRenderer().apply {
++                    check(accept(bitmap, bounds, branded)) { "native artwork missing from a visible role" }
++                }
++            }
++            Pair(capture(false), capture(true), row.width, row.height, cells.size)
++        }
++        try {
++            cells.forEachIndexed { index, cell ->
++                if (cell.role != XIAOTUAN) try {
++                    setCaptureState(cell.glyph, selected[index])
++                } catch (error: Exception) {
++                    restored = false
++                    android.util.Log.e("MeituanBinding", "native selected-state restoration failed; takeover cancelled", error)
++                }
++            }
++        } finally { row.alpha = alpha }
++        if (!restored) return failed("native state restoration could not be verified")
++        val captured = result.getOrElse { return failed("native artwork capture failed: ${it.javaClass.simpleName}") }
++        pair = captured; source = row; signature = key; issue = null
++        return true
++    }
++
++    fun draw(canvas: Canvas, frame: AdapterNavigationFrame, active: Boolean) {
++        val art = pair ?: return
++        val renderer = if (active) art.active else art.idle
++        val referenceWidth = art.width.toFloat() / art.slots.coerceAtLeast(1)
++        val scale = minOf(frame.slotWidth / referenceWidth, frame.height / art.height.toFloat()) * frame.extraScale
++        frame.barLayout?.takeIf { !active }?.let { layout ->
++            renderer.draw(canvas, layout.actionIndex, layout.actionLeft + layout.actionSize / 2f,
++                frame.height / 2f, minOf(layout.actionSize / referenceWidth,
++                    frame.height / art.height.toFloat()) * frame.extraScale,
++                maxIconSize = layout.actionSize * .78f)
++        }
++        frame.enabledIndices.forEachIndexed { slot, index ->
++            val left = 4f * frame.density + slot * frame.slotWidth
++            val save = canvas.save()
++            canvas.clipRect(left, 0f, left + frame.slotWidth, frame.height.toFloat())
++            renderer.draw(canvas, index, left + frame.slotWidth / 2f, frame.height / 2f, scale,
++                iconOnly = frame.iconOnly)
++            canvas.restoreToCount(save)
++        }
++    }
++
++    fun clear() {
++        pair = null; source = null; signature = Long.MIN_VALUE
++        attemptedSource = null; attemptedSignature = Long.MIN_VALUE
++    }
++}
+diff --git a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainTabsRenderer.kt b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainTabsRenderer.kt
+index aa6668c..7398737 100644
+--- a/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainTabsRenderer.kt
++++ b/app/src/main/java/io/github/offlineglass/hook/adapters/meituan_main/MeituanMainTabsRenderer.kt
+@@ -5,7 +5,6 @@ import android.graphics.Canvas
+ import android.graphics.Paint
+ import android.graphics.Rect
+ import android.graphics.RectF
+-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.XIAOTUAN
+ 
+ /** Native semantic glyph snapshots; independent of obfuscated implementation names. */
+ internal class MeituanMainTabsRenderer {
+@@ -14,8 +13,10 @@ internal class MeituanMainTabsRenderer {
+     private var parts = emptyMap<Int, Parts?>()
+     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+     private val destination = RectF()
+-    fun accept(snapshot: Bitmap, bounds: Map<Int, Rect>): Boolean {
++    private var brandedSlots = emptySet<Int>()
++    fun accept(snapshot: Bitmap, bounds: Map<Int, Rect>, brandedSlots: Set<Int> = emptySet()): Boolean {
+         bitmap = snapshot
++        this.brandedSlots = brandedSlots
+         val width = snapshot.width
+         val height = snapshot.height
+         val pixels = IntArray(width * height)
+@@ -59,8 +60,9 @@ internal class MeituanMainTabsRenderer {
+             // Preserve the native slot axis. Asymmetric badges must not drag
+             // the icon sideways, independently in selected/unselected images.
+             val axis = (left + right) / 2f
+-            Parts(icon, if (index == XIAOTUAN) null else label,
+-                if (index == XIAOTUAN) icon.exactCenterX() else axis, label?.let { axis })
++            val branded = index in brandedSlots
++            Parts(icon, if (branded) null else label,
++                if (branded) icon.exactCenterX() else axis, label?.let { axis })
+         }
+         return parts.values.all { it != null }
+     }
+@@ -71,7 +73,7 @@ internal class MeituanMainTabsRenderer {
+         val tab = parts[index] ?: return false
+         if (projectedScale <= 0f) return false
+         val textScale = projectedScale * 1.2f
+-        val iconScale = minOf(textScale * if (index == XIAOTUAN) 1.12f else 1.15f,
++        val iconScale = minOf(textScale * if (index in brandedSlots) 1.12f else 1.15f,
+             maxIconSize / tab.icon.width(), maxIconSize / tab.icon.height())
+         // Keep the previous projected icon/text gap; enlarge only the artwork.
+         val caption = tab.label.takeUnless { iconOnly }
