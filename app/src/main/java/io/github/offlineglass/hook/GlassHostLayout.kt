@@ -13607,11 +13607,13 @@ internal fun surfaceContainerColor(dark: Boolean): Int {
 
 internal fun isDarkGlass(): Boolean {
 
-        appNavigationState?.forceDarkMode(selectedIndex)?.let { return it }
+        val forced = appNavigationState?.forceDarkMode(selectedIndex)
+        if (forced != null) return reportDarkMode(forced, "state")
+        if (targetAdapter?.forceLightMode == true || context.packageName == MEITUAN_TAKEOUT_PACKAGE) {
+            return reportDarkMode(false, "forceLight")
+        }
 
-        if (targetAdapter?.forceLightMode == true || context.packageName == MEITUAN_TAKEOUT_PACKAGE) return false
-
-        return when (config.themeMode) {
+        val result = when (config.themeMode) {
 
         GlassConfig.THEME_LIGHT -> false
 
@@ -13633,6 +13635,25 @@ internal fun isDarkGlass(): Boolean {
 
         }
 
+    }
+        return reportDarkMode(result, "auto")
+    }
+
+    /** Bounded diagnostic: a bar that is darker than its page is otherwise only a screenshot. */
+    private var darkReports = 0
+
+    private fun reportDarkMode(dark: Boolean, source: String): Boolean {
+        if (darkReports < 8) {
+            darkReports++
+            android.util.Log.i("OfflineGlass", "[DarkMode] " + context.packageName +
+                " dark=" + dark + " via=" + source + " theme=" + config.themeMode +
+                " contentDark=" + detectedContentDark +
+                " appNight=" + (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+                    Configuration.UI_MODE_NIGHT_YES) +
+                " sysNight=" + (android.content.res.Resources.getSystem().configuration.uiMode and
+                    Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES))
+        }
+        return dark
     }
 
     }
@@ -13662,6 +13683,13 @@ internal fun isDarkGlass(): Boolean {
         if (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
 
             Configuration.UI_MODE_NIGHT_YES) return true
+
+        // An adapter that disables platform force-dark already shows the app's own
+        // palette. The system-wide auto switch (nightfall) or a global dark_mode
+        // must not darken the chrome of a light app page: that is the Weibo
+        // light-mode-with-dark-bar report, and Meituan avoided it only because it
+        // pins forceLightMode.
+        if (targetAdapter?.disablePlatformForceDark == true) return false
 
         // 2. Check system resources (not affected by per-app overrides)
 
