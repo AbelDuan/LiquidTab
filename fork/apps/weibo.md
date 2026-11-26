@@ -63,3 +63,19 @@ appNight=true sysNight=true forceDarkDisabled=true surfaces=0 labels=0 source=fa
 诊断日志加了 `surfaces / labels / source` 三个计数，能直接看出采样是否拿到东西。
 
 实测（竖屏内屏，页面浅色）：顶栏胶囊与底栏都是浅灰白玻璃，图标深色。
+
+## 栏色跟随页面（custom.6）
+
+微博开着系统「自动」夜间，进程的 `Configuration` 报 `NIGHT_YES`，但它自己用浅色主题渲染页面
+（`forceDarkDisabled=true`）。原来的 AUTO 判定先看这个开关，于是栏永远是深色玻璃，和浅色页面撞色。
+
+`isDarkGlass()` 的 AUTO 分支现在先取**宿主背后真实绘制的不透明底色**：
+
+1. 有原生行（`navigationSource`）就看它的父容器链；
+2. 顶栏这类没有原生行的宿主，从自己的 `parent` 开始往上 6 层；
+3. 再退到 `window.decorView.background`、主题 `android.R.attr.colorBackground`。
+
+采到（alpha ≥ 200）就以它为准：浅色页面 → 浅色栏，深色页面 → 深色栏；alpha 不足或只有渐变
+时才落到原来的开关判断。采样 300 ms 缓存，日志多打一个 `pageSurfaceDark=`。
+
+实测微博首页：`dark=false via=auto ... appNight=true pageSurfaceDark=false`，顶栏与底栏都是浅色玻璃。
