@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Mon, 23 Nov 2026 19:12:49 +0800
-Subject: [PATCH 06/25] fix(ci): normalize CRLF gradlew before running
+Subject: [PATCH 06/28] fix(ci): normalize CRLF gradlew before running
 
 ---
  .github/workflows/build-apk.yml | 6 +++++-

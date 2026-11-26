@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 11:57:19 +0800
-Subject: [PATCH 20/25] fix(geometry): re-derive the bar when the host window
+Subject: [PATCH 20/28] fix(geometry): re-derive the bar when the host window
  resizes
 
 A cold start on the inner display or straight into Meituan's parallel

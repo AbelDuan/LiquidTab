@@ -41,3 +41,25 @@ if (targetAdapter?.disablePlatformForceDark == true) return false
 
 诊断：`[OfflineGlass][DarkMode]` 日志（每个 host 最多 4 条）会打印
 `dark / via / theme / contentDark / appNight / sysNight / forceDarkDisabled`，下次配色不对先看这一行。
+
+## 第二轮：采样优先级（2026-11-26 晚）
+
+第一轮之后仍会偶发「页面浅、栏深」，日志 `[DarkMode] … dark=true via=auto contentDark=null
+appNight=true sysNight=true forceDarkDisabled=true surfaces=0 labels=0 source=false` 暴露了两件事：
+
+1. 微博用自己的主题强制浅色时，进程 Configuration 仍是 `NIGHT_YES`（系统 auto 夜间），
+   所以 `appNight` 不能单独作为判据；
+2. 微博底栏由本模块自绘，原生行的文字被隐藏，`contentDark` 一直是 `null`；顶栏宿主更是
+   `navigationSource == null`（虚拟宿主），于是判定落到 `systemNightMode()`。
+
+补两条：
+
+- `updateDetectedContentTheme()` 现在**先采「栏后面那层不透明底色」**（源视图往上 4 层的
+  `ColorDrawable` 且 alpha ≥ 200），亮度 < 96 判为深色页面；只有采不到底色时才退回文字亮度。
+  玻璃坐在什么颜色上，就用什么颜色决定深浅。
+- `isDarkGlass()` 入口增加按需采样：`themeMode == SYSTEM && detectedContentDark == null` 时先跑一次，
+  因为自绘型适配器（微博）不会经过原来的 pre-draw 探针路径。
+
+诊断日志加了 `surfaces / labels / source` 三个计数，能直接看出采样是否拿到东西。
+
+实测（竖屏内屏，页面浅色）：顶栏胶囊与底栏都是浅灰白玻璃，图标深色。

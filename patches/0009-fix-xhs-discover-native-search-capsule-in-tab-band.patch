@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Mon, 23 Nov 2026 19:25:47 +0800
-Subject: [PATCH 09/25] fix(xhs): discover native search capsule in tab band
+Subject: [PATCH 09/28] fix(xhs): discover native search capsule in tab band
 
 ---
  .../hook/adapters/xhs/XhsSearchChrome.kt      | 199 ++++++++----------

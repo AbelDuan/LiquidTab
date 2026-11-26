@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: AbelDuan <32724782+AbelDuan@users.noreply.github.com>
 Date: Thu, 26 Nov 2026 11:43:51 +0800
-Subject: [PATCH 19/25] fix(geometry): keep the glass bar inside the app's own
+Subject: [PATCH 19/28] fix(geometry): keep the glass bar inside the app's own
  window
 
 On the fold's inner display (portrait) and in Meituan's parallel window the

@@ -26,6 +26,9 @@
 | `ac4928b` `fix(theme): let a force-dark-disabled app keep its own light palette` | 声明 `disablePlatformForceDark` 的应用（微博）改为以自身 Configuration 判定深浅，系统 auto/全局 dark_mode 不再把浅色页面配成深色玻璃；不写死浅色，微博切深色仍变深。 |
 | `34478e4` | 判定诊断改走 XposedBridge 日志（每 host ≤4 条）。 |
 
+| `493e103` `fix(theme): let the surface behind the bar decide light or dark` | 先采栏后不透明底色判深浅，采不到才退回文字亮度。 |
+| `2a69f93` `fix(theme): resolve the page theme on demand for adapter-drawn bars` | 自绘型适配器（微博）不经过 pre-draw 探针，`isDarkGlass()` 入口改为按需采样；诊断加 surfaces/labels/source 计数。 |
+
 ## CI / 仓库
 
 | 提交 | 说明 |
