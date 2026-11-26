@@ -317,6 +317,9 @@ internal interface TargetAdapter {
     /** Return true when the adapter fully configured this source icon. */
     fun configureSourceIcon(view: ImageView, config: GlassConfig, density: Float): Boolean = false
     fun resolveNestedNavigation(navigation: ViewGroup): Pair<ViewGroup, Int>? = null
+    /** Remap the persisted slot mask when the native row's live slot count differs
+     *  from the count the mask was authored against (an app may drop a tab). */
+    fun navigationHiddenMask(mask: Int, slots: Int): Int = mask
     fun acceptsNavigationSource(navigation: ViewGroup): Boolean = true
     fun hookSignals(): List<TargetHookSignal> = emptyList()
     fun installHooks(lpparam: XC_LoadPackage.LoadPackageParam, spec: TargetSpec) = Unit

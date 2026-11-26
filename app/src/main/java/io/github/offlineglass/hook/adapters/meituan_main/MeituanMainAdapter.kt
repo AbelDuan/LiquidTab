@@ -74,12 +74,19 @@ internal object MeituanMainAdapter : TargetAdapter {
     override fun acceptsNavigationSource(navigation: ViewGroup): Boolean =
         MeituanMainNativeTabs.isNavigationRow(navigation)
     override fun estimateSlotCount(group: ViewGroup, spec: TargetSpec): Int? =
-        SLOT_COUNT.takeIf { MeituanMainNativeTabs.isNavigationRow(group) }
+        MeituanMainNativeTabs.cells(group)?.size?.takeIf { MeituanMainNativeTabs.isNavigationRow(group) }
     override fun adjustNavigationScore(view: ViewGroup, idName: String?, score: Int): Int =
         if (idName == "bottom_tab_block" || MeituanMainNativeTabs.isNavigationRow(view)) score else 0
     override fun resolveNestedNavigation(navigation: ViewGroup): Pair<ViewGroup, Int>? {
         val row = MeituanMainNativeTabs.row(navigation) ?: return null
-        return row to SLOT_COUNT
+        val cells = MeituanMainNativeTabs.cells(row) ?: return null
+        MeituanMainNativeTabs.report(row, cells)
+        return row to cells.size
     }
+    /** The persisted mask is authored for the five-slot bar; a bar without the
+     *  video slot has no bit at that position, so the stale bit must not hide
+     *  whatever tab now occupies slot 1. */
+    override fun navigationHiddenMask(mask: Int, slots: Int): Int =
+        if (slots == SLOT_COUNT) mask else mask and (1 shl VIDEO).inv()
 }
 

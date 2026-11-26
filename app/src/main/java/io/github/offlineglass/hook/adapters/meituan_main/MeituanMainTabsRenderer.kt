@@ -5,7 +5,6 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.XIAOTUAN
 
 /** Native semantic glyph snapshots; independent of obfuscated implementation names. */
 internal class MeituanMainTabsRenderer {
@@ -14,8 +13,10 @@ internal class MeituanMainTabsRenderer {
     private var parts = emptyMap<Int, Parts?>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val destination = RectF()
-    fun accept(snapshot: Bitmap, bounds: Map<Int, Rect>): Boolean {
+    private var brandedSlots = emptySet<Int>()
+    fun accept(snapshot: Bitmap, bounds: Map<Int, Rect>, brandedSlots: Set<Int> = emptySet()): Boolean {
         bitmap = snapshot
+        this.brandedSlots = brandedSlots
         val width = snapshot.width
         val height = snapshot.height
         val pixels = IntArray(width * height)
@@ -59,8 +60,9 @@ internal class MeituanMainTabsRenderer {
             // Preserve the native slot axis. Asymmetric badges must not drag
             // the icon sideways, independently in selected/unselected images.
             val axis = (left + right) / 2f
-            Parts(icon, if (index == XIAOTUAN) null else label,
-                if (index == XIAOTUAN) icon.exactCenterX() else axis, label?.let { axis })
+            val branded = index in brandedSlots
+            Parts(icon, if (branded) null else label,
+                if (branded) icon.exactCenterX() else axis, label?.let { axis })
         }
         return parts.values.all { it != null }
     }
@@ -71,7 +73,7 @@ internal class MeituanMainTabsRenderer {
         val tab = parts[index] ?: return false
         if (projectedScale <= 0f) return false
         val textScale = projectedScale * 1.2f
-        val iconScale = minOf(textScale * if (index == XIAOTUAN) 1.12f else 1.15f,
+        val iconScale = minOf(textScale * if (index in brandedSlots) 1.12f else 1.15f,
             maxIconSize / tab.icon.width(), maxIconSize / tab.icon.height())
         // Keep the previous projected icon/text gap; enlarge only the artwork.
         val caption = tab.label.takeUnless { iconOnly }

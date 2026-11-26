@@ -10,7 +10,6 @@ import android.view.View
 import android.view.ViewGroup
 import io.github.offlineglass.hook.compat.XposedHelpers
 import io.github.offlineglass.hook.adapters.AdapterNavigationFrame
-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.SLOT_COUNT
 import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
 import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.XIAOTUAN
 
@@ -19,7 +18,7 @@ import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.
  * Capture is UI-only and restores native flags before any event can dispatch. */
 internal class MeituanMainStateArtwork {
     private data class Pair(val idle: MeituanMainTabsRenderer, val active: MeituanMainTabsRenderer,
-        val width: Int, val height: Int)
+        val width: Int, val height: Int, val slots: Int)
     @Volatile private var pair: Pair? = null
     private var source: ViewGroup? = null
     private var signature = Long.MIN_VALUE
@@ -57,17 +56,21 @@ internal class MeituanMainStateArtwork {
         if (source !== row) { signature = Long.MIN_VALUE }
         val native = MeituanMainNativeTabs.bind(row) ?: return failed("native navigation binding unavailable")
         val cells = native.cells.filter { it.role != VIDEO }
-        val bounds = cells.associate { cell ->
-            cell.role to Rect(cell.slot.left, 0, cell.slot.right, row.height)
-        }
+        // Slot positions, not roles: the framework draws by slot index, and a bar
+        // that dropped the video tab has four slots while the roles stay 0..4.
+        val bounds = cells.mapIndexed { index, cell ->
+            index to Rect(cell.slot.left, 0, cell.slot.right, row.height)
+        }.toMap()
+        val branded = cells.mapIndexedNotNull { index, cell -> index.takeIf { cell.role == XIAOTUAN } }.toSet()
         if (bounds.values.any { it.left < 0 || it.right > row.width || it.isEmpty } ||
             bounds.values.sortedBy { it.left }.zipWithNext().any { (left, right) -> left.right > right.left })
             return failed("native navigation cell bounds unavailable or overlapping")
         var key = row.width.toLong() * 31 + row.height
         for (cell in cells) {
             val glyph = cell.glyph
+            val slotIndex = cells.indexOf(cell)
             key = key * 31 + cell.role
-            key = key * 31 + bounds.getValue(cell.role).hashCode()
+            key = key * 31 + bounds.getValue(slotIndex).hashCode()
             key = key * 31 + System.identityHashCode(glyph)
             key = key * 31 + cell.slot.visibility
             key = key * 31 + glyph.visibility
@@ -102,10 +105,10 @@ internal class MeituanMainStateArtwork {
                 // its leaf directly bypasses that strategy and can yield blank art.
                 row.draw(Canvas(bitmap))
                 return MeituanMainTabsRenderer().apply {
-                    check(accept(bitmap, bounds)) { "native artwork missing from a visible role" }
+                    check(accept(bitmap, bounds, branded)) { "native artwork missing from a visible role" }
                 }
             }
-            Pair(capture(false), capture(true), row.width, row.height)
+            Pair(capture(false), capture(true), row.width, row.height, cells.size)
         }
         try {
             cells.forEachIndexed { index, cell ->
@@ -126,7 +129,7 @@ internal class MeituanMainStateArtwork {
     fun draw(canvas: Canvas, frame: AdapterNavigationFrame, active: Boolean) {
         val art = pair ?: return
         val renderer = if (active) art.active else art.idle
-        val referenceWidth = art.width.toFloat() / SLOT_COUNT
+        val referenceWidth = art.width.toFloat() / art.slots.coerceAtLeast(1)
         val scale = minOf(frame.slotWidth / referenceWidth, frame.height / art.height.toFloat()) * frame.extraScale
         frame.barLayout?.takeIf { !active }?.let { layout ->
             renderer.draw(canvas, layout.actionIndex, layout.actionLeft + layout.actionSize / 2f,

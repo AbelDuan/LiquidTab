@@ -99,6 +99,19 @@ internal object MeituanMainNativeTabs {
         }
         return Binding(row, cells).also { bindings[row] = it; failures.remove(row) }
     }
+    /** Live cells of the verified row; the count is the row's slot count, not a
+     *  constant, because a release may drop a tab from the native bar. */
+    fun cells(row: ViewGroup?): List<Cell>? = bind(row)?.cells
+    /** One-shot structural report so an app change can be read from logcat. */
+    private val reportedRows = WeakHashMap<ViewGroup, Boolean>()
+    fun report(row: ViewGroup, cells: List<Cell>) {
+        if (reportedRows.put(row, true) == true) return
+        val detail = cells.joinToString(",") { cell ->
+            val title = runCatching { cell.glyph.javaClass.getMethod("getTitle").invoke(cell.glyph) as? String }.getOrNull()
+            "s${cell.slot.left}-${cell.slot.right}=role${cell.role}($title)"
+        }
+        Log.i("MeituanBinding", "navigation row slots=${cells.size} [$detail]")
+    }
     fun row(block: ViewGroup): ViewGroup? {
         if (!isBlock(block)) return null
         return (0 until block.childCount).mapNotNull { block.getChildAt(it) as? ViewGroup }

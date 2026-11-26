@@ -5,8 +5,6 @@ import android.view.View
 import android.view.ViewGroup
 import io.github.offlineglass.hook.GlassHostLayout
 import io.github.offlineglass.hook.adapters.AppNavigationState
-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.SLOT_COUNT
-import io.github.offlineglass.hook.adapters.meituan_main.MeituanMainTabContract.VIDEO
 
 /** Cart geometry and native tab artwork belong exclusively to Meituan main. */
 internal class MeituanMainNavigationState(private val pageHost: GlassHostLayout? = null) : AppNavigationState {
@@ -34,17 +32,21 @@ internal class MeituanMainNavigationState(private val pageHost: GlassHostLayout?
         nativeSelected(source, slotCount)
 
     private fun nativeSelected(source: ViewGroup?, slotCount: Int): Int? {
-        if (slotCount != SLOT_COUNT) return null
         val native = MeituanMainNativeTabs.bind(source) ?: return null
-        return native.cells.singleOrNull { it.glyph.isSelected }?.role
+        // The framework speaks in slot positions, not roles: a bar that dropped the
+        // video tab still has four slots, so the role value can no longer index them.
+        if (native.cells.size != slotCount) return null
+        return native.cells.indexOfFirst { it.glyph.isSelected }.takeIf { it >= 0 }
     }
 
     override fun performTap(host: View, source: ViewGroup?, index: Int, slotCount: Int): Boolean =
         dispatchLive(source, index, slotCount)
 
     private fun dispatchLive(source: ViewGroup?, index: Int, count: Int): Boolean {
-        if (count != SLOT_COUNT || index !in 0 until count || index == VIDEO) return false
-        val button = MeituanMainNativeTabs.bind(source)?.cells?.firstOrNull { it.role == index }?.button
+        if (index !in 0 until count) return false
+        val cells = MeituanMainNativeTabs.cells(source) ?: return false
+        if (cells.size != count) return false
+        val button = cells.getOrNull(index)?.button
             ?.takeIf { it.isAttachedToWindow && it.isEnabled } ?: return false
 
         val handled = button.performClick()

@@ -7831,8 +7831,16 @@ internal fun syncOpticalVisibilityCompanions() {
 
         index in 0 until slotCount &&
 
-            (config.hiddenMask and (1 shl index) != 0 || targetAdapter?.isNavigationEntryDisabled(index, slotCount) == true ||
+            (hiddenMaskForSlots() and (1 shl index) != 0 || targetAdapter?.isNavigationEntryDisabled(index, slotCount) == true ||
                 appNavigationState?.isNavigationEntryAvailable(index) == false)
+
+
+
+    /** Adapters may re-map a persisted mask when the native row lost or gained a slot. */
+
+    private fun hiddenMaskForSlots(): Int =
+
+        targetAdapter?.navigationHiddenMask(config.hiddenMask, slotCount) ?: config.hiddenMask
 
 
 
