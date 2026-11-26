@@ -13656,10 +13656,6 @@ internal fun isDarkGlass(): Boolean {
         return dark
     }
 
-    }
-
-
-
     /**
 
      * One dark switch drives Weibo's glass fill, icon set and label colors �?
