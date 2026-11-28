@@ -81,3 +81,23 @@ grep -i "offlineglass" "$F" | tail -30
 - 搜索胶囊的判定必须在顶栏带内，否则会误伤信息流卡片文字；当前实现跳过 RecyclerView 子树。
 - 折叠屏内屏走 `PadHomeTabLayout`（与 `HomeTabLayout` 不是父子类）。`XhsTopBar.install` 现在同时 hook
   两个类；600dp 宽度模拟下顶栏和搜索胶囊隐藏都正常，但真实内屏仍需展开复核。
+
+## 深色模式的顶栏与底栏（custom.7）
+
+小红书用 `XYSkinManager` 自己换肤，深色模式下 `android:colorBackground` 与 `decorView` 背景**仍报告浅色**，
+所以任何通用采样在小红书身上都会答错。而顶栏宿主的导航状态里本来就有权威答案
+（`resolveAutoDarkMode` → `XhsTopTheme.dark` → `SKIN_THEME_LIGHT` 与否）。
+
+- `GlassHostLayout.isDarkGlass()` 的 AUTO 顺序改成：**知道自身皮肤的宿主先说** → 页面级容器采样
+  （≥80% 宽 × 30% 高）→ 窗口背景 → 主题背景 → 父容器链 → 内容/系统开关；
+- `XhsNavigationState` 也补上 `resolveAutoDarkMode`，让底栏和顶栏用同一个来源
+  （补之前底栏单独走采样，顶栏修好后它反而变浅）。
+
+实测（内屏平行视界，两栏都在）：
+
+| 场景 | 判定 | 顶栏 | 底栏 |
+| --- | --- | --- | --- |
+| 深色 | `dark=true` | 深色玻璃 | 深色玻璃 |
+| 浅色 | `dark=false` | 浅色玻璃 | 浅色玻璃 |
+
+微博浅色页（`disablePlatformForceDark` 分支）与美团（`theme=forceLight`）不受影响。
