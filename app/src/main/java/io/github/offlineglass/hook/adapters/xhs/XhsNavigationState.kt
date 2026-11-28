@@ -27,6 +27,14 @@ internal class XhsNavigationState : AppNavigationState {
     private val homeViewport = XhsHomeViewport()
     private val bottomGradient = XhsBottomGradient()
 
+    /**
+     * Xiaohongshu swaps palettes through XYSkinManager instead of the window
+     * theme, so theme and background probes report light on a dark feed and
+     * the bottom bar ended up the only light glass on the page. Its own skin
+     * answers for every host of the app, not just the top bar.
+     */
+    override fun resolveAutoDarkMode(host: View) = XhsTopTheme.dark(host.context)
+
     override fun onHostPreDraw(
         host: View, source: ViewGroup?, selected: () -> Int, enabled: Boolean,
         density: Float, barHeightPx: Int, surfaceColor: () -> Int,
