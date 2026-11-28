@@ -13634,8 +13634,8 @@ internal fun isDarkGlass(): Boolean {
 
         GlassConfig.THEME_DARK -> true
 
-        else -> pageSurfaceDark()
-            ?: appNavigationState?.resolveAutoDarkMode(this) ?: if (
+        else -> appNavigationState?.resolveAutoDarkMode(this)
+            ?: pageSurfaceDark() ?: if (
 
             targetAdapter?.usesContentDarkMode == true ||
 
