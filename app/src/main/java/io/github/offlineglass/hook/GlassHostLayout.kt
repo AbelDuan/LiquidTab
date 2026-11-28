@@ -13676,10 +13676,14 @@ internal fun isDarkGlass(): Boolean {
 
     private fun resolvePageSurfaceDark(): Boolean? {
         val window = context.findActivity()?.window
-        // The window and its theme describe the page as a whole; a container a
-        // few levels above the host may carry a local light panel that says
-        // nothing about the page (Xiaohongshu keeps its dark feed but paints
-        // some chrome containers light). Whole-page surfaces therefore win.
+        // Only a container that spans the page is the page's surface. Chrome
+        // containers stay light in Xiaohongshu's dark mode and sit directly
+        // above the hosts, so a plain walk up the parents picks the wrong one;
+        // a size test on the same walk ignores them.
+        pageWideSurfaceDark()?.let {
+            noteSurface("page", it)
+            return it
+        }
         colorOfDrawable(window?.decorView?.background)?.let {
             noteSurface("decor", it)
             return it
@@ -13704,6 +13708,22 @@ internal fun isDarkGlass(): Boolean {
         return null
     }
 
+    private fun pageWideSurfaceDark(): Boolean? {
+        val metrics = resources.displayMetrics
+        val minWidth = metrics.widthPixels * PAGE_SURFACE_MIN_WIDTH
+        val minHeight = metrics.heightPixels * PAGE_SURFACE_MIN_HEIGHT
+        var view: View? = (parent as? View) ?: navigationSource
+        var depth = 0
+        while (view != null && depth < 8) {
+            if (view.width >= minWidth && view.height >= minHeight) {
+                colorOfDrawable(view.background)?.let { return it }
+            }
+            view = view.parent as? View
+            depth++
+        }
+        return null
+    }
+
     private fun themeSurfaceColor(window: android.view.Window?): Int? = runCatching {
         val theme = window?.context?.theme ?: return@runCatching null
         val attrs = theme.obtainStyledAttributes(intArrayOf(android.R.attr.colorBackground))
@@ -13713,6 +13733,7 @@ internal fun isDarkGlass(): Boolean {
     }.getOrNull()
 
     private var surfaceProbes = 0
+
 
     private fun noteSurface(level: String, dark: Boolean?) {
         if (surfaceProbes >= 4) return
@@ -14464,6 +14485,10 @@ internal fun isDarkGlass(): Boolean {
 
         /** An opaque surface darker than this reads as a dark-mode page. */
         const val DARK_SURFACE_LUMINANCE = 96f
+
+        /** A page surface spans most of the screen; chrome containers do not. */
+        const val PAGE_SURFACE_MIN_WIDTH = 0.8f
+        const val PAGE_SURFACE_MIN_HEIGHT = 0.3f
 
         // QQ's drawer/page layers animate independently while remaining
 
