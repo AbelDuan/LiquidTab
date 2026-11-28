@@ -13675,23 +13675,50 @@ internal fun isDarkGlass(): Boolean {
     }
 
     private fun resolvePageSurfaceDark(): Boolean? {
+        val window = context.findActivity()?.window
+        // The window and its theme describe the page as a whole; a container a
+        // few levels above the host may carry a local light panel that says
+        // nothing about the page (Xiaohongshu keeps its dark feed but paints
+        // some chrome containers light). Whole-page surfaces therefore win.
+        colorOfDrawable(window?.decorView?.background)?.let {
+            noteSurface("decor", it)
+            return it
+        }
+        themeSurfaceColor(window)?.let { color ->
+            colorOfSurface(color)?.let {
+                noteSurface("theme", it)
+                return it
+            }
+        }
         var view: View? = navigationSource ?: (parent as? View)
         var depth = 0
         while (view != null && depth < 6) {
-            colorOfDrawable(view.background)?.let { return it }
+            colorOfDrawable(view.background)?.let {
+                noteSurface("view" + depth, it)
+                return it
+            }
             view = view.parent as? View
             depth++
         }
-        val window = context.findActivity()?.window
-        colorOfDrawable(window?.decorView?.background)?.let { return it }
-        val styled = runCatching {
-            val typed = window?.context?.theme ?: return@runCatching null
-            val attrs = typed.obtainStyledAttributes(intArrayOf(android.R.attr.colorBackground))
-            val color = attrs.getColor(0, 0)
-            attrs.recycle()
-            color
-        }.getOrNull()
-        return colorOfSurface(styled)
+        noteSurface("none", null)
+        return null
+    }
+
+    private fun themeSurfaceColor(window: android.view.Window?): Int? = runCatching {
+        val theme = window?.context?.theme ?: return@runCatching null
+        val attrs = theme.obtainStyledAttributes(intArrayOf(android.R.attr.colorBackground))
+        val color = attrs.getColor(0, 0)
+        attrs.recycle()
+        color
+    }.getOrNull()
+
+    private var surfaceProbes = 0
+
+    private fun noteSurface(level: String, dark: Boolean?) {
+        if (surfaceProbes >= 4) return
+        surfaceProbes++
+        XposedBridge.log("[OfflineGlass][Surface] " + context.packageName +
+            " level=" + level + " dark=" + dark)
     }
 
     private fun colorOfDrawable(drawable: android.graphics.drawable.Drawable?): Boolean? = when (drawable) {
